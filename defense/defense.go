@@ -45,17 +45,21 @@ func (m MethodID) String() string {
 	return methodNames[m]
 }
 
-// DeviceState is Kratos' verdict on the device cookie of an attempt. Kratos
+// DeviceState is Kratos' verdict on the KnownDeviceCookie of an attempt. Kratos
 // validates the cookie, the implementation never sees it nor the key.
 type DeviceState uint8
 
 const (
-	// DeviceNone means no device cookie was presented. It is the zero value.
+	// DeviceNone means no usable KnownDeviceCookie was presented. It is the
+	// zero value. An expired cookie also maps to DeviceNone: expiry is routine
+	// for returning users and says nothing about the client, so it must not
+	// be treated as suspicious.
 	DeviceNone DeviceState = iota
-	// DeviceInvalid means a cookie was presented but is forged, malformed,
-	// expired, or bound to a different identifier.
+	// DeviceInvalid means a cookie was presented but is forged, malformed, or
+	// bound to a different identifier.
 	DeviceInvalid
-	// DeviceKnown means a valid cookie, bound to the identifier of this attempt.
+	// DeviceKnown means a valid, unexpired cookie, bound to the identifier of
+	// this attempt.
 	DeviceKnown
 )
 

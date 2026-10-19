@@ -19,11 +19,9 @@ import (
 	"github.com/ory/x/otelx"
 
 	"github.com/ory/kratos/continuity"
-	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
-	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/selfservice/errorx"
 	"github.com/ory/kratos/selfservice/flow/login"
 	"github.com/ory/kratos/selfservice/flow/registration"
@@ -54,8 +52,6 @@ type dependencies interface {
 	errorx.ManagementProvider
 	ValidationProvider
 	hash.HashProvider
-	defense.Provider
-	knowndevicecookie.Provider
 
 	registration.HandlerProvider
 	registration.HooksProvider

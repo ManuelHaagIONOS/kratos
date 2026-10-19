@@ -69,8 +69,12 @@ func TestMethodID(t *testing.T) {
 	assert.Equal(t, "password", defense.MethodPassword.String())
 	assert.Equal(t, "app_password", defense.MethodAppPassword.String())
 	assert.Equal(t, "unknown", defense.MethodID(200).String())
+	names := map[string]defense.MethodID{}
 	for m := defense.MethodUnknown; m < defense.NumMethods; m++ {
 		assert.NotEmpty(t, m.String())
+		other, dup := names[m.String()]
+		assert.False(t, dup, "%d and %d are both %q", m, other, m.String())
+		names[m.String()] = m
 	}
 }
 

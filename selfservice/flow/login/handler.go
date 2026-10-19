@@ -14,6 +14,7 @@ import (
 
 	"github.com/ory/herodot"
 	hydraclientgo "github.com/ory/hydra-client-go/v2"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hydra"
 	"github.com/ory/kratos/identity"
@@ -68,6 +69,7 @@ type (
 		sessiontokenexchange.PersistenceProvider
 		logrusx.Provider
 		TestStrategyProvider
+		gate.Dependencies
 	}
 	HandlerProvider interface {
 		LoginHandler() *Handler
@@ -92,6 +94,24 @@ func (h *Handler) RegisterPublicRoutes(public *httprouterx.RouterPublic) {
 	public.GET(RouteSubmitFlow, h.updateLoginFlow)
 
 	public.DELETE(RouteDeleteTestFlow, h.deleteTestLoginFlow)
+}
+
+// login runs a strategy behind the defense gate. The strategy enters the gate
+// itself (gate.From(ctx).Check) once it is responsible and has its payload;
+// here the outcome is reported to the defense for all strategies alike, so that
+// no strategy has to call AfterSuccess or AfterFailure, and a new one cannot get
+// them wrong.
+func (h *Handler) login(ss Strategy, w http.ResponseWriter, r *http.Request, f *Flow, sess *session.Session) (*identity.Identity, error) {
+	ds, ok := ss.(DefendedStrategy)
+	if !ok {
+		return ss.Login(w, r, f, sess)
+	}
+	g := gate.New(h.d, w, r, ds.DefenseMethod())
+	// In place, not on a copy: strategies keep the request body readable for the next one by replacing it on r.
+	*r = *r.WithContext(gate.With(r.Context(), g))
+	i, err := ss.Login(w, r, f, sess)
+	g.Done(r.Context(), err == nil && i != nil, err)
+	return i, err
 }
 
 func (h *Handler) RegisterAdminRoutes(admin *httprouterx.RouterAdmin) {
@@ -958,7 +978,7 @@ continueLogin:
 	var i *identity.Identity
 	var group node.UiNodeGroup
 	for _, ss := range h.d.AllLoginStrategies() {
-		interim, err := ss.Login(w, r, f, sess)
+		interim, err := h.login(ss, w, r, f, sess)
 		group = ss.NodeGroup()
 		if errors.Is(err, flow.ErrStrategyNotResponsible) {
 			continue

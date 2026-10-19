@@ -31,11 +31,23 @@ const (
 	MethodCode
 	MethodLookupSecret
 	MethodAppPassword
+	MethodTOTP
+	MethodWebAuthn
+	MethodPasskey
+	// MethodRecovery, MethodVerification and MethodRegistration are not
+	// credential checks but the routes of those flows that send a message to
+	// an address named by the client. The identifier digest is that address.
+	MethodRecovery
+	MethodVerification
+	MethodRegistration
 	// NumMethods is the number of defined IDs, including MethodUnknown.
 	NumMethods
 )
 
-var methodNames = [NumMethods]string{"unknown", "password", "code", "lookup_secret", "app_password"}
+var methodNames = [NumMethods]string{
+	"unknown", "password", "code", "lookup_secret", "app_password",
+	"totp", "webauthn", "passkey", "recovery", "verification", "registration",
+}
 
 // String returns the stable name of the method, for logs and metrics.
 func (m MethodID) String() string {
@@ -121,6 +133,14 @@ type Decision struct {
 }
 
 // Defense is called around credential checks.
+//
+// Kratos calls it through the gate package, in two parts. Each strategy calls
+// BeforeAttempt itself, via Gate.Check, because only the strategy knows when it
+// is responsible and has the payload; it does so before any database lookup or
+// hashing. The flow handler calls AfterSuccess and AfterFailure for all
+// strategies alike, based on what the strategy returned, so a strategy never
+// calls them. A strategy that is not to be defended must say so, with a reason,
+// in the coverage test of the driver package.
 type Defense interface {
 	// BeforeAttempt is called before database lookup and password hashing.
 	// An error fails open: it is logged and the attempt is allowed without delay.

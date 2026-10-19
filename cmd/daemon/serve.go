@@ -37,6 +37,7 @@ import (
 	"github.com/ory/kratos/x/nosurfx"
 	"github.com/ory/x/healthx"
 	"github.com/ory/x/httprouterx"
+	"github.com/ory/x/httpx"
 	"github.com/ory/x/metricsx"
 	"github.com/ory/x/networkx"
 	"github.com/ory/x/otelx"
@@ -56,6 +57,9 @@ var httpMetrics = prometheusx.NewHTTPMetrics("kratos", prometheusx.HTTPPrefix, c
 func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Command) (func() error, error) {
 	cfg := r.Config().ServePublic(ctx)
 	l := r.Logger()
+	if _, err := r.Config().DefenseTrustedProxies(ctx); err != nil {
+		return nil, err
+	}
 
 	rec := negroni.NewRecovery()
 	rec.Logger = l
@@ -76,6 +80,7 @@ func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Comm
 		publicLogger.ExcludePaths(healthx.AliveCheckPath, healthx.ReadyCheckPath)
 	}
 
+	n.UseFunc(clientInfoMiddleware(r))
 	n.UseFunc(semconv.Middleware)
 	n.Use(publicLogger)
 	n.Use(x.HTTPLoaderContextMiddleware(r))
@@ -156,6 +161,9 @@ func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Comm
 func serveAdmin(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Command) (func() error, error) {
 	cfg := r.Config().ServeAdmin(ctx)
 	l := r.Logger()
+	if _, err := r.Config().DefenseTrustedProxies(ctx); err != nil {
+		return nil, err
+	}
 
 	rec := negroni.NewRecovery()
 	rec.Logger = l
@@ -179,6 +187,7 @@ func serveAdmin(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Comma
 			httprouterx.AdminPrefix+prometheusx.MetricsPrometheusPath,
 		)
 	}
+	n.UseFunc(clientInfoMiddleware(r))
 	n.UseFunc(semconv.Middleware)
 	n.Use(adminLogger)
 	n.UseFunc(httprouterx.AddAdminPrefixIfNotPresentNegroni)
@@ -367,5 +376,19 @@ func ServeAll(d *driver.RegistryDefault) func(cmd *cobra.Command, args []string)
 			g.Go(task)
 		}
 		return g.Wait()
+	}
+}
+
+// clientInfoMiddleware resolves the client's address once per request, before
+// anything reads it. Forwarding headers count only from the configured trusted
+// proxies; an invalid setting trusts nobody.
+func clientInfoMiddleware(r driver.Registry) func(http.ResponseWriter, *http.Request, http.HandlerFunc) {
+	return func(w http.ResponseWriter, req *http.Request, next http.HandlerFunc) {
+		t, err := r.Config().DefenseTrustedProxies(req.Context())
+		if err != nil {
+			r.Logger().WithError(err).Error("Invalid defense.client_ip settings, trusting no proxy.")
+			t = httpx.TrustedProxies{}
+		}
+		next(w, req.WithContext(httpx.ContextWithClientInfo(req, t)))
 	}
 }

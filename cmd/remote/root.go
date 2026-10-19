@@ -11,19 +11,20 @@ import (
 	"github.com/ory/kratos/cmd/cliclient"
 )
 
-var remoteCmd = &cobra.Command{
-	Use:   "remote",
-	Short: "Helpers and management for remote Ory Kratos instances",
+// newRemoteCmd builds the remote command with its subcommands. Every root
+// command gets its own: package level commands would be shared, and mutated, by
+// every root built in a process (see TestNewRootCmdsAreIndependent).
+func newRemoteCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "remote",
+		Short: "Helpers and management for remote Ory Kratos instances",
+	}
+	cliclient.RegisterClientFlags(c.PersistentFlags())
+	cmdx.RegisterFormatFlags(c.PersistentFlags())
+	c.AddCommand(newVersionCmd(), newStatusCmd())
+	return c
 }
 
 func RegisterCommandRecursive(parent *cobra.Command) {
-	parent.AddCommand(remoteCmd)
-
-	remoteCmd.AddCommand(versionCmd)
-	remoteCmd.AddCommand(statusCmd)
-}
-
-func init() {
-	cliclient.RegisterClientFlags(remoteCmd.PersistentFlags())
-	cmdx.RegisterFormatFlags(remoteCmd.PersistentFlags())
+	parent.AddCommand(newRemoteCmd())
 }

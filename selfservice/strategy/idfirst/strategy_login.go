@@ -14,6 +14,8 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/selfservice/flow"
 	"github.com/ory/kratos/selfservice/flow/login"
@@ -42,6 +44,10 @@ func (s *Strategy) handleLoginError(r *http.Request, f *login.Flow, payload Upda
 	return err
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodIdentifierFirst }
+
 func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, sess *session.Session) (_ *identity.Identity, err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.idfirst.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -66,6 +72,13 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	f.TransientPayload = p.TransientPayload
 
 	if err := flow.EnsureCSRF(s.d, r, f.Type, s.d.Config().DisableAPIFlowEnforcement(ctx), s.d.GenerateCSRFToken, p.CSRFToken); err != nil {
+		return nil, s.handleLoginError(r, f, p, err)
+	}
+
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	// This step looks the account up and may send it a code (FastLogin1FA), so it is defended like a route that sends messages.
+	if err := gate.From(ctx).Check(ctx, p.Identifier, ""); err != nil {
 		return nil, s.handleLoginError(r, f, p, err)
 	}
 

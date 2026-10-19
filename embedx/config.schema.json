@@ -1844,6 +1844,11 @@
                       "title": "TOTP Issuer",
                       "description": "The issuer (e.g. a domain name) will be shown in the TOTP app (e.g. Google Authenticator). It helps the user differentiate between different codes.",
                       "type": "string"
+                    },
+                    "accept_plaintext_secrets": {
+                      "title": "Accept plaintext TOTP secrets",
+                      "description": "Defaults to true. Whether to accept TOTP secrets that are not encrypted with secrets.totp (and to store new ones in plaintext while no key is configured). Needed while existing secrets are migrated, which happens on their next use or with `kratos migrate totp-secrets`. Set to false afterwards. Kratos warns at startup while it is true.",
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
@@ -2818,6 +2823,31 @@
             "maxLength": 32
           },
           "minItems": 1
+        },
+        "totp": {
+          "type": "array",
+          "title": "Keys to encrypt TOTP secrets at rest",
+          "description": "Unlike secrets.cipher, these are meant to live long: TOTP secrets stay in the database for as long as the user keeps the device. Each entry names its key, and the name is stored with the ciphertext. The first entry encrypts new secrets, all entries decrypt. A secret under another entry is re-encrypted with the first one on its next use (or by `kratos migrate totp-secrets`), so only drop an entry once that has happened. If the list is empty, TOTP secrets are stored in plaintext, which requires selfservice.methods.totp.config.accept_plaintext_secrets.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "Key ID",
+                "description": "Alphanumeric name of the key, unique in the list, and not `otpauth` (checked at startup).",
+                "pattern": "^[A-Za-z0-9]+$"
+              },
+              "key": {
+                "type": "string",
+                "title": "Key",
+                "description": "The 32 byte AES-256 key.",
+                "minLength": 32,
+                "maxLength": 32
+              }
+            },
+            "required": ["id", "key"],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -2896,6 +2926,86 @@
               "default": 12
             }
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "defense": {
+      "title": "Attack Defense Configuration",
+      "type": "object",
+      "properties": {
+        "fingerprint_key": {
+          "title": "Defense fingerprint key",
+          "description": "Secret from which the keyed digests of identifiers and submitted credentials handed to the attack defense are derived. Defaults to the first entry of secrets.default. Changing it resets the defense's counters.",
+          "type": "string",
+          "minLength": 16
+        },
+        "client_ip": {
+          "title": "Client IP",
+          "description": "Where the client's address comes from, for the attack defense, session devices and telemetry. By default only the TCP peer is used and every forwarding header is ignored, as any client can send them.",
+          "type": "object",
+          "properties": {
+            "header": {
+              "title": "Client IP header",
+              "description": "The one header the trusted proxy sets, e.g. True-Client-IP. For X-Forwarded-For, the right-most entry that is not itself a trusted proxy is used.",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]+$"
+            },
+            "trusted_proxies": {
+              "title": "Trusted proxies",
+              "description": "CIDRs (or single addresses) of the proxies whose header, and Cf-* geo headers, are believed. A peer outside them is the client.",
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "max_delay": {
+          "title": "Maximum defense delay",
+          "description": "A safety net against a faulty attack defense: the upper bound for the delay it may impose on a single login attempt. The defense decides its own delays; longer ones are shortened to this value.",
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
+          "default": "10s"
+        },
+        "known_device_cookie": {
+          "title": "Known device cookie",
+          "description": "A long-lived signed cookie, set after a successful login, that tells the attack defense a request comes from a device which logged in to this account before.",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "title": "Enable the known device cookie",
+              "description": "A signed cookie remembering up to three accounts, as keyed pseudonyms that reveal no address, is set after a fully authenticated browser login, and handed to the attack defense as a verdict (none, invalid, known) on later password login attempts. auto (the default) enables it if the attack defense in use acts on the verdict (Defense.UsesKnownDeviceVerdict), which the default no-op defense does not; true and false force it on or off.",
+              "type": ["boolean", "string"],
+              "enum": [true, false, "auto", "true", "false"],
+              "default": "auto"
+            },
+            "secrets": {
+              "type": "array",
+              "title": "Known device cookie secrets",
+              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window. Dropping it makes the cookies it signed fail verification: the attack defense then sees a forged cookie (stricter limits) until the user's next login replaces it, as a cookie of a dropped secret cannot be told from a forged one.",
+              "items": {
+                "type": "string",
+                "minLength": 16
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "lifespan": {
+              "title": "Known device cookie lifespan",
+              "description": "How long the cookie is valid, counted from the last successful login.",
+              "type": "string",
+              "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
+              "default": "2160h"
+            },
+            "name": {
+              "title": "Known device cookie name",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "default": "ory_kratos_known_device"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

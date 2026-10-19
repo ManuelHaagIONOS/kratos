@@ -26,6 +26,8 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
@@ -155,6 +157,10 @@ type updateLoginFlowWithPasskeyMethod struct {
 	Login string `json:"passkey_login"`
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodPasskey }
+
 func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, _ *session.Session) (i *identity.Identity, err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.passkey.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -195,6 +201,15 @@ func (s *Strategy) loginPasswordless(ctx context.Context, w http.ResponseWriter,
 
 	if err := flow.EnsureCSRF(s.d, r, f.Type, s.d.Config().DisableAPIFlowEnforcement(ctx), s.d.GenerateCSRFToken, p.CSRFToken); err != nil {
 		return nil, s.handleLoginError(r, f, err)
+	}
+
+	if len(p.Login) > 0 {
+		// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+		// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+		// The assertion names no account before it is verified, so only the client's address is known.
+		if err := gate.From(ctx).Check(ctx, "", ""); err != nil {
+			return nil, s.handleLoginError(r, f, err)
+		}
 	}
 
 	if len(p.Login) == 0 {

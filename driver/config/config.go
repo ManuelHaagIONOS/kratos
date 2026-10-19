@@ -31,7 +31,9 @@ import (
 	"github.com/ory/herodot"
 	"github.com/ory/jsonschema/v3"
 	"github.com/ory/jsonschema/v3/httploader"
+	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/embedx"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/request"
 	"github.com/ory/x/configx"
 	"github.com/ory/x/contextx"
@@ -89,6 +91,7 @@ const (
 	ViperKeySecretsDefault                                   = "secrets.default"
 	ViperKeySecretsCookie                                    = "secrets.cookie"
 	ViperKeySecretsCipher                                    = "secrets.cipher"
+	ViperKeySecretsTOTP                                      = "secrets.totp"
 	ViperKeySecretsPagination                                = "secrets.pagination"
 	ViperKeyPublicBaseURL                                    = "serve.public.base_url"
 	ViperKeyAdminBaseURL                                     = "serve.admin.base_url"
@@ -161,6 +164,14 @@ const (
 	ViperKeySelfServiceVerificationNotifyUnknownRecipients   = "selfservice.flows.verification.notify_unknown_recipients"
 	ViperKeyDefaultIdentitySchemaID                          = "identity.default_schema_id"
 	ViperKeyIdentitySchemas                                  = "identity.schemas"
+	ViperKeyDefenseFingerprintKey                            = "defense.fingerprint_key"
+	ViperKeyDefenseClientIPHeader                            = "defense.client_ip.header"
+	ViperKeyDefenseClientIPTrustedProxies                    = "defense.client_ip.trusted_proxies"
+	ViperKeyDefenseMaxDelay                                  = "defense.max_delay"
+	ViperKeyKnownDeviceCookieEnabled                         = "defense.known_device_cookie.enabled"
+	ViperKeyKnownDeviceCookieSecrets                         = "defense.known_device_cookie.secrets"
+	ViperKeyKnownDeviceCookieLifespan                        = "defense.known_device_cookie.lifespan"
+	ViperKeyKnownDeviceCookieName                            = "defense.known_device_cookie.name"
 	ViperKeyHasherAlgorithm                                  = "hashers.algorithm"
 	ViperKeyHasherArgon2ConfigMemory                         = "hashers.argon2.memory"
 	ViperKeyHasherArgon2ConfigIterations                     = "hashers.argon2.iterations"
@@ -186,6 +197,7 @@ const (
 	ViperKeyIgnoreNetworkErrors                              = "selfservice.methods.password.config.ignore_network_errors"
 	ViperKeyPasswordRegistrationProfileGroup                 = "selfservice.methods.password.config.password_profile_registration_node_group"
 	ViperKeyTOTPIssuer                                       = "selfservice.methods.totp.config.issuer"
+	ViperKeyTOTPAcceptPlaintext                              = "selfservice.methods.totp.config.accept_plaintext_secrets"
 	ViperKeyOIDCBaseRedirectURL                              = "selfservice.methods.oidc.config.base_redirect_uri"
 	ViperKeySAMLBaseRedirectURL                              = "selfservice.methods.saml.config.base_redirect_uri"
 	ViperKeyWebAuthnRPDisplayName                            = "selfservice.methods.webauthn.config.rp.display_name"
@@ -226,6 +238,10 @@ const (
 	Argon2DefaultDeviation              = 500 * time.Millisecond
 	Argon2DefaultDedicatedMemory        = 1 * bytesize.GB
 	BcryptDefaultCost            uint32 = 12
+
+	// DefenseDefaultMaxDelay is a safety net against a faulty defense, not
+	// policy: the defense decides how long to delay.
+	DefenseDefaultMaxDelay = 10 * time.Second
 )
 
 // DefaultSessionCookieName returns the default cookie name for the kratos session.
@@ -567,6 +583,91 @@ func (p *Config) SessionName(ctx context.Context) string {
 	return cmp.Or(p.GetProvider(ctx).String(ViperKeySessionName), DefaultSessionCookieName)
 }
 
+// DefenseMaxDelay is the upper bound for the delay a defense.Defense may impose
+// on a single attempt.
+func (p *Config) DefenseMaxDelay(ctx context.Context) time.Duration {
+	return p.GetProvider(ctx).DurationF(ViperKeyDefenseMaxDelay, DefenseDefaultMaxDelay)
+}
+
+// DefenseTrustedProxies says whose forwarding header gives the client's address.
+// Unset, no header is believed. An invalid CIDR is an error; the servers refuse to start with one.
+func (p *Config) DefenseTrustedProxies(ctx context.Context) (httpx.TrustedProxies, error) {
+	pr := p.GetProvider(ctx)
+	return httpx.ParseTrustedProxies(pr.String(ViperKeyDefenseClientIPHeader), pr.Strings(ViperKeyDefenseClientIPTrustedProxies))
+}
+
+// DefenseFingerprintSecret is the secret from which the identifier and
+// credential digests handed to a defense.Defense are derived. It falls back to
+// the first default secret; rotating it resets the defense's counters.
+func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
+	if k := p.GetProvider(ctx).String(ViperKeyDefenseFingerprintKey); k != "" {
+		return []byte(k)
+	}
+	return p.SecretsDefault(ctx)[0]
+}
+
+// KnownDeviceCookieMode says whether the KnownDeviceCookie is issued after login
+// and validated before credential checks.
+type KnownDeviceCookieMode uint8
+
+const (
+	// KnownDeviceCookieAuto, the default, follows the attack defense: on if
+	// defense.Defense.UsesKnownDeviceVerdict, off for any other.
+	KnownDeviceCookieAuto KnownDeviceCookieMode = iota
+	// KnownDeviceCookieOn forces the cookie on, whatever the defense.
+	KnownDeviceCookieOn
+	// KnownDeviceCookieOff forces the cookie off, whatever the defense.
+	KnownDeviceCookieOff
+)
+
+// KnownDeviceCookieMode reads defense.known_device_cookie.enabled: auto (also
+// when unset), true or false, as a boolean or as the string of an environment
+// variable. Anything else, which the schema rejects, counts as auto.
+func (p *Config) KnownDeviceCookieMode(ctx context.Context) KnownDeviceCookieMode {
+	switch v := p.GetProvider(ctx).Get(ViperKeyKnownDeviceCookieEnabled).(type) {
+	case bool:
+		if v {
+			return KnownDeviceCookieOn
+		}
+		return KnownDeviceCookieOff
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true":
+			return KnownDeviceCookieOn
+		case "false":
+			return KnownDeviceCookieOff
+		}
+	}
+	return KnownDeviceCookieAuto
+}
+
+// KnownDeviceCookieSecrets are the secrets the KnownDeviceCookie is signed
+// with: the first signs, all verify. They fall back to secrets.default rather
+// than secrets.cookie, as the cookie outlives session cookies by months and
+// its secrets must stay listed that long.
+func (p *Config) KnownDeviceCookieSecrets(ctx context.Context) [][]byte {
+	secrets := p.GetProvider(ctx).Strings(ViperKeyKnownDeviceCookieSecrets)
+	if len(secrets) == 0 {
+		return p.SecretsDefault(ctx)
+	}
+	result := make([][]byte, len(secrets))
+	for k, v := range secrets {
+		result[k] = []byte(v)
+	}
+	return result
+}
+
+// KnownDeviceCookieLifespan is how long a KnownDeviceCookie is valid, counted
+// from the last successful login.
+func (p *Config) KnownDeviceCookieLifespan(ctx context.Context) time.Duration {
+	return p.GetProvider(ctx).DurationF(ViperKeyKnownDeviceCookieLifespan, knowndevicecookie.DefaultLifespan)
+}
+
+// KnownDeviceCookieName is the name of the KnownDeviceCookie.
+func (p *Config) KnownDeviceCookieName(ctx context.Context) string {
+	return cmp.Or(p.GetProvider(ctx).String(ViperKeyKnownDeviceCookieName), knowndevicecookie.DefaultName)
+}
+
 func (p *Config) HasherArgon2(ctx context.Context) *Argon2 {
 	// warn about usage of default values and point to the docs
 	// warning will require https://github.com/ory/viper/issues/19
@@ -635,6 +736,11 @@ func (p *Config) IdentityTraitsSchemaURL(ctx context.Context, schemaID string) (
 
 func (p *Config) TOTPIssuer(ctx context.Context) string {
 	return p.GetProvider(ctx).StringF(ViperKeyTOTPIssuer, p.SelfPublicURL(ctx).Hostname())
+}
+
+// TOTPAcceptPlaintext reports whether TOTP secrets that are not encrypted with secrets.totp are accepted.
+func (p *Config) TOTPAcceptPlaintext(ctx context.Context) bool {
+	return p.GetProvider(ctx).BoolF(ViperKeyTOTPAcceptPlaintext, true)
 }
 
 func (p *Config) OIDCRedirectURIBase(ctx context.Context) *url.URL {
@@ -929,6 +1035,57 @@ func (p *Config) SecretsSession(ctx context.Context) [][]byte {
 func (p *Config) SecretsCipher(ctx context.Context) [][32]byte {
 	secrets := p.GetProvider(ctx).Strings(ViperKeySecretsCipher)
 	return ToCipherSecrets(secrets)
+}
+
+// KeyedSecrets returns the entries of secrets.totp, first the one that encrypts. It never falls back to
+// secrets.cipher or secrets.default: those rotate far sooner than TOTP secrets live. Malformed entries (the schema
+// rejects them) are skipped, so they can neither encrypt nor decrypt; see TOTPKeysProblem.
+func (p *Config) KeyedSecrets(ctx context.Context) []cipher.KeyEntry {
+	var raw []struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := p.GetProvider(ctx).Unmarshal(ViperKeySecretsTOTP, &raw); err != nil {
+		return nil
+	}
+
+	var keys []cipher.KeyEntry
+	for _, r := range raw {
+		if cipher.ValidateKeyID(r.ID) != nil || len(r.Key) != 32 {
+			continue
+		}
+		e := cipher.KeyEntry{ID: r.ID}
+		copy(e.Key[:], r.Key)
+		keys = append(keys, e)
+	}
+	return keys
+}
+
+// TOTPKeysProblem returns why secrets.totp is unusable (malformed or duplicate entries), or nil. Used at startup,
+// so that a typo does not silently leave secrets unprotected or unreadable.
+func (p *Config) TOTPKeysProblem(ctx context.Context) error {
+	var raw []struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := p.GetProvider(ctx).Unmarshal(ViperKeySecretsTOTP, &raw); err != nil {
+		return errors.Wrap(err, "secrets.totp")
+	}
+
+	seen := map[string]struct{}{}
+	for i, r := range raw {
+		if err := cipher.ValidateKeyID(r.ID); err != nil {
+			return errors.Wrapf(err, "secrets.totp[%d]", i)
+		}
+		if len(r.Key) != 32 {
+			return errors.Errorf("secrets.totp[%d]: the key must be 32 bytes long", i)
+		}
+		if _, ok := seen[r.ID]; ok {
+			return errors.Errorf("secrets.totp[%d]: duplicate key id %q", i, r.ID)
+		}
+		seen[r.ID] = struct{}{}
+	}
+	return nil
 }
 
 func ToCipherSecrets(secrets []string) [][32]byte {

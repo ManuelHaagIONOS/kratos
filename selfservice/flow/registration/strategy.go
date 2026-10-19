@@ -14,6 +14,14 @@ import (
 	"github.com/ory/kratos/identity"
 )
 
+// DefendedStrategy marks a registration strategy that enters the defense gate: it calls
+// gate.From(ctx).Check where it is responsible and has its payload, before any
+// lookup, hashing or sending; the handler reports the outcome. A strategy that does not implement it must be
+// listed as exempt, with a reason, in the coverage test of the driver package.
+type DefendedStrategy interface {
+	RegistrationDefended()
+}
+
 type Strategy interface {
 	ID() identity.CredentialsType
 	NodeGroup() node.UiNodeGroup

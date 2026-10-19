@@ -13,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
@@ -91,6 +93,10 @@ type updateLoginFlowWithTotpMethod struct {
 	TransientPayload json.RawMessage `json:"transient_payload,omitempty" form:"transient_payload"`
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodTOTP }
+
 func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, sess *session.Session) (i *identity.Identity, err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.totp.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -117,6 +123,13 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 		return nil, s.handleLoginError(r, f, err)
 	}
 
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	// The account is the one of the session: a second factor follows a verified first one.
+	if err := gate.From(ctx).Check(ctx, sess.IdentityID.String(), p.TOTPCode); err != nil {
+		return nil, s.handleLoginError(r, f, err)
+	}
+
 	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), sess.IdentityID.String())
 	if err != nil {
 		return nil, s.handleLoginError(r, f, errors.WithStack(schema.NewNoTOTPDeviceRegistered()))
@@ -127,13 +140,26 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The TOTP credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 
-	key, err := otp.NewKeyFromURL(o.TOTPURL)
+	keyURL, upgraded, err := OpenURL(ctx, s.d, i.ID, o.TOTPURL)
+	if err != nil {
+		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(err, i.ID))
+	}
+
+	key, err := otp.NewKeyFromURL(keyURL)
 	if err != nil {
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(err), i.ID))
 	}
 
 	if !totp.Validate(p.TOTPCode, key.Secret()) {
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(schema.NewTOTPVerifierWrongError("#/")), i.ID))
+	}
+
+	// Migrate on use, and only for a correct code: a wrong guess proves nothing, and must not make us write to the
+	// database (an attacker could otherwise force a write per attempt). Best effort: the next login tries again.
+	if upgraded != "" {
+		if err := StoreUpgrade(ctx, s.d.PrivilegedIdentityPool(), i.ID, o.TOTPURL, upgraded); err != nil {
+			s.d.Logger().WithError(err).WithField("identity_id", i.ID).Warn("Unable to re-encrypt the TOTP secret.")
+		}
 	}
 
 	f.Active = s.ID()

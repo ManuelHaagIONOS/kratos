@@ -19,6 +19,8 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
@@ -34,7 +36,12 @@ import (
 	"github.com/ory/x/decoderx"
 )
 
-var _ login.AAL1FormHydrator = new(Strategy)
+var (
+	_ login.AAL1FormHydrator = new(Strategy)
+	_ login.DefendedStrategy = new(Strategy)
+)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodPassword }
 
 func (s *Strategy) handleLoginError(r *http.Request, f *login.Flow, payload updateLoginFlowWithPasswordMethod, err error) error {
 	if f != nil {
@@ -75,6 +82,13 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 
 	identifier := cmp.Or(p.Identifier, p.LegacyIdentifier)
+
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	if err := gate.From(ctx).Check(ctx, identifier, p.Password); err != nil {
+		return nil, s.handleLoginError(r, f, p, err)
+	}
+
 	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), identifier)
 	if err != nil {
 		time.Sleep(x.RandomDelay(s.d.Config().HasherArgon2(ctx).ExpectedDuration, s.d.Config().HasherArgon2(ctx).ExpectedDeviation))
@@ -84,12 +98,15 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))
 	if err := d.Decode(&o); err != nil {
+		// A server-side fault, not a failed guess: not reported to the defense,
+		// so that broken records cannot lock out their owner.
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The password credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 
 	if o.ShouldUsePasswordMigrationHook() {
 		pwHook := s.d.Config().PasswordMigrationHook(ctx)
 		if !pwHook.Enabled {
+			// Operator error and no verdict on the credentials: neither success nor failure is reported.
 			return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrMisconfiguration().WithReasonf("Password migration hook is not enabled but password migration is requested.")), i.ID)
 		}
 

@@ -82,23 +82,50 @@ func (g *Gate) Check(ctx context.Context, identifier, secret string) error {
 	if g == nil {
 		return nil
 	}
-	fp := defense.NewFingerprinter(g.d.Config().DefenseFingerprintSecret(ctx))
-	a := defense.Attempt{
-		Method: g.method,
-		IP:     defense.ParseIP(httpx.ClientIP(g.r)),
-	}
+	fp := g.fingerprinter(ctx)
+	a := g.attemptOf(fp, secret)
 	if identifier != "" {
 		a.IdentifierDigest = fp.Identifier(identifier)
-	}
-	if secret != "" {
-		a.CredentialDigest = fp.Credential(secret)
 	}
 	// Only the first factor may lean on a known device: it must not ease the guessing of a second factor.
 	if g.method == defense.MethodPassword {
 		// A pure HMAC check of the cookie, no database access, so it is ready in time for BeforeAttempt.
 		a.Device = g.d.KnownDeviceCookie(ctx).Verify(g.r, identifier)
 	}
+	return g.enter(ctx, a)
+}
 
+// CheckScope is Check for an attempt that names no account but something else,
+// such as the identity provider whose token endpoint the request would hit. The
+// scope is digested in a space of its own, so a client can never make an
+// identifier collide with it.
+func (g *Gate) CheckScope(ctx context.Context, scope, secret string) error {
+	if g == nil {
+		return nil
+	}
+	fp := g.fingerprinter(ctx)
+	a := g.attemptOf(fp, secret)
+	a.IdentifierDigest = fp.Scope(scope)
+	return g.enter(ctx, a)
+}
+
+func (g *Gate) fingerprinter(ctx context.Context) *defense.Fingerprinter {
+	return defense.NewFingerprinter(g.d.Config().DefenseFingerprintSecret(ctx))
+}
+
+func (g *Gate) attemptOf(fp *defense.Fingerprinter, secret string) defense.Attempt {
+	a := defense.Attempt{
+		Method: g.method,
+		IP:     defense.ParseIP(httpx.ClientIP(g.r)),
+	}
+	if secret != "" {
+		a.CredentialDigest = fp.Credential(secret)
+	}
+	return a
+}
+
+// enter asks the defense about the attempt, and remembers it for the outcome.
+func (g *Gate) enter(ctx context.Context, a defense.Attempt) error {
 	dec, err := g.d.Defense().BeforeAttempt(ctx, a)
 	if err != nil {
 		// Fail open: an unavailable defense (e.g. its backing store) must not lock out all users.

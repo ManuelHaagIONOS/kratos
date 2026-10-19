@@ -45,6 +45,13 @@ const (
 	MethodRecovery
 	MethodVerification
 	MethodRegistration
+	// MethodOIDC is the callback of an OpenID Connect or OAuth2 sign-in: the
+	// user has proven themselves to the provider, the request carries the code to
+	// exchange for tokens. The exchange is an outbound call that costs us a
+	// round trip and counts against our client at the provider. No account is
+	// known yet: the identifier digest names the provider (a scope, not an
+	// account), the credential digest the code.
+	MethodOIDC
 	// NumMethods is the number of defined IDs, including MethodUnknown.
 	NumMethods
 )
@@ -52,6 +59,7 @@ const (
 var methodNames = [NumMethods]string{
 	"unknown", "password", "code", "lookup_secret", "app_password",
 	"totp", "webauthn", "passkey", "identifier_first", "recovery", "verification", "registration",
+	"oidc",
 }
 
 // String returns the stable name of the method, for logs and metrics.

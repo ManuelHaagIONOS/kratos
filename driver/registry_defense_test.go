@@ -24,8 +24,9 @@ func TestLoginStrategiesAreDefendedOrExempt(t *testing.T) {
 	t.Parallel()
 
 	exempt := map[identity.CredentialsType]string{
-		identity.CredentialsTypeOIDC: "The user proves themselves to the provider, which applies its own defense; " +
-			"the login step only redirects. The callback route, which exchanges the code with the provider, is not a Login call.",
+		identity.CredentialsTypeOIDC: "The user proves themselves to the provider, which applies its own defense; the login " +
+			"step only redirects. The callback, which exchanges the code with the provider, is not a Login call: it is gated " +
+			"in oidc.Strategy.HandleCallback.",
 	}
 
 	_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
@@ -105,7 +106,7 @@ func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 		}
 		checkCoverage(t, "registration", ids, defended, map[string]string{
 			identity.CredentialsTypeOIDC.String(): "The user proves themselves to the provider, which applies its own defense; " +
-				"the registration step only redirects. The callback route is not a Register call.",
+				"the registration step only redirects. The callback is gated in oidc.Strategy.HandleCallback.",
 			"profile": "Collects the traits and shows the next screen: no credential is checked, nothing is hashed or sent, " +
 				"and the traits are only validated, which touches no database.",
 		})

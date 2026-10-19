@@ -35,6 +35,15 @@ func TestFingerprinter(t *testing.T) {
 		assert.NotEqual(t, f.Identifier("same"), f.Credential("same"))
 	})
 
+	t.Run("case=a scope never collides with an identifier", func(t *testing.T) {
+		t.Parallel()
+		assert.NotEqual(t, f.Identifier("google"), f.Scope("google"), "whatever a client types as an identifier")
+		assert.NotEqual(t, f.Credential("google"), f.Scope("google"))
+		assert.Equal(t, f.Scope("google"), f.Scope("google"))
+		assert.NotEqual(t, f.Scope("google"), f.Scope("Google"), "provider ids are exact, not canonicalized")
+		assert.False(t, f.Scope("google").IsZero())
+	})
+
 	t.Run("case=key matters", func(t *testing.T) {
 		t.Parallel()
 		other := defense.NewFingerprinter([]byte("another-secret-key"))

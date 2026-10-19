@@ -14,11 +14,11 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Fingerprinter derives the digests carried by Attempt. Identifier and
+// Fingerprinter derives the digests carried by Attempt. Identifier, scope and
 // credential digests use separate HKDF subkeys, so they can never be confused
 // or correlated.
 type Fingerprinter struct {
-	identifierKey, credentialKey []byte
+	identifierKey, scopeKey, credentialKey []byte
 }
 
 // NewFingerprinter derives the subkeys from secret.
@@ -31,6 +31,7 @@ func NewFingerprinter(secret []byte) *Fingerprinter {
 	}
 	return &Fingerprinter{
 		identifierKey: derive("ory/kratos/defense/identifier"),
+		scopeKey:      derive("ory/kratos/defense/scope"),
 		credentialKey: derive("ory/kratos/defense/credential"),
 	}
 }
@@ -38,6 +39,14 @@ func NewFingerprinter(secret []byte) *Fingerprinter {
 // Identifier returns the digest of the canonicalized identifier.
 func (f *Fingerprinter) Identifier(identifier string) Digest {
 	return mac(f.identifierKey, Canonicalize(identifier))
+}
+
+// Scope returns the digest of the name of something that is not an account, such
+// as an identity provider. It lives in its own digest space: whatever a client
+// types as an identifier, it can never collide with, and so never count against,
+// a scope.
+func (f *Fingerprinter) Scope(name string) Digest {
+	return mac(f.scopeKey, name)
 }
 
 // Credential returns the digest of a submitted secret, byte for byte.

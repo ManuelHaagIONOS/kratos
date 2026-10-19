@@ -2924,7 +2924,7 @@
           "properties": {
             "enabled": {
               "title": "Enable the known device cookie",
-              "description": "A signed cookie remembering up to three accounts is set after a fully authenticated browser login, and handed to the attack defense as a verdict (none, invalid, known) on later password login attempts. auto (the default) enables it if the attack defense in use acts on the verdict (Defense.UsesKnownDeviceVerdict), which the default no-op defense does not; true and false force it on or off.",
+              "description": "A signed cookie remembering up to three accounts, as keyed pseudonyms that reveal no address, is set after a fully authenticated browser login, and handed to the attack defense as a verdict (none, invalid, known) on later password login attempts. auto (the default) enables it if the attack defense in use acts on the verdict (Defense.UsesKnownDeviceVerdict), which the default no-op defense does not; true and false force it on or off.",
               "type": ["boolean", "string"],
               "enum": [true, false, "auto", "true", "false"],
               "default": "auto"
@@ -2932,7 +2932,7 @@
             "secrets": {
               "type": "array",
               "title": "Known device cookie secrets",
-              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window; dropping it only makes users lose the bypass until their next login.",
+              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window. Dropping it makes the cookies it signed fail verification: the attack defense then sees a forged cookie (stricter limits) until the user's next login replaces it, as a cookie of a dropped secret cannot be told from a forged one.",
               "items": {
                 "type": "string",
                 "minLength": 16

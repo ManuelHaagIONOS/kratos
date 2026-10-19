@@ -4,7 +4,9 @@
 package knowndevicecookie_test
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +66,14 @@ func withValue(c *http.Cookie, v string) *http.Cookie {
 
 func entries(c *http.Cookie) []string { return strings.Split(c.Value, "~") }
 
+// field returns field i (0 version, 1 pseudonym, 2 issue time, 3 MAC) of entry n of the cookie.
+func field(t *testing.T, c *http.Cookie, n, i int) string {
+	t.Helper()
+	parts := strings.Split(entries(c)[n], ".")
+	require.Len(t, parts, 4)
+	return parts[i]
+}
+
 func TestNew(t *testing.T) {
 	t.Parallel()
 
@@ -105,14 +115,15 @@ func TestIssue(t *testing.T) {
 		assert.False(t, ck.Secure)
 	})
 
-	t.Run("case=identifier is plaintext and canonicalized", func(t *testing.T) {
+	t.Run("case=an entry holds a pseudonym of the canonical identifier, never the identifier", func(t *testing.T) {
 		t.Parallel()
 		ck := issue(t, newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret"), "  Alice@Example.COM ")
 		parts := strings.Split(ck.Value, ".")
 		require.Len(t, parts, 4)
-		id, err := base64.RawURLEncoding.DecodeString(parts[1])
+		pseudonym, err := base64.RawURLEncoding.DecodeString(parts[1])
 		require.NoError(t, err)
-		assert.Equal(t, alice, string(id))
+		assert.Len(t, pseudonym, 16, "128 bits")
+		assert.LessOrEqual(t, len(ck.Value), 89, "an entry has a fixed size")
 	})
 
 	t.Run("case=empty or too long identifier is refused", func(t *testing.T) {
@@ -265,7 +276,7 @@ func TestMultipleAccounts(t *testing.T) {
 		ck = issue(t, c, "ALICE@example.com", ck)
 
 		assert.Len(t, entries(ck), 2)
-		assert.Equal(t, alice, plaintext(t, entries(ck)[0]), "moved to the front")
+		assert.Equal(t, field(t, issue(t, c, alice), 0, 1), field(t, ck, 0, 1), "alice's entry is at the front")
 		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), bob))
 	})
 
@@ -320,13 +331,83 @@ func TestMultipleAccounts(t *testing.T) {
 	})
 }
 
-func plaintext(t *testing.T, entry string) string {
-	t.Helper()
-	parts := strings.Split(entry, ".")
-	require.Len(t, parts, 4)
-	id, err := base64.RawURLEncoding.DecodeString(parts[1])
-	require.NoError(t, err)
-	return string(id)
+// The cookie is pseudonymous: a keyed hash stands for the identifier.
+func TestPseudonym(t *testing.T) {
+	t.Parallel()
+	const secret = "secret-secret-secret"
+	c := newCodec(t, knowndevicecookie.Config{}, secret)
+
+	t.Run("case=the cookie reveals neither the identifier nor an unkeyed hash of it", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, c, alice)
+		sum := sha256.Sum256([]byte(alice))
+		prefixed := sha256.Sum256([]byte("kratos/email/v1" + alice))
+		for name, leaked := range map[string]string{
+			"identifier":             alice,
+			"local part":             "alice",
+			"domain":                 "example.com",
+			"base64 identifier":      base64.RawURLEncoding.EncodeToString([]byte(alice)),
+			"hex sha256":             hex.EncodeToString(sum[:]),
+			"base64 sha256":          base64.RawURLEncoding.EncodeToString(sum[:]),
+			"base64 sha256, 128 bit": base64.RawURLEncoding.EncodeToString(sum[:16]),
+			"base64 prefixed sha256": base64.RawURLEncoding.EncodeToString(prefixed[:16]),
+			"hex prefixed sha256":    hex.EncodeToString(prefixed[:]),
+			"base64 std sha256":      base64.StdEncoding.EncodeToString(sum[:16]),
+		} {
+			assert.NotContains(t, ck.Value, leaked, name)
+		}
+	})
+
+	t.Run("case=the same account has the same pseudonym, whatever the spelling", func(t *testing.T) {
+		t.Parallel()
+		want := field(t, issue(t, c, alice), 0, 1)
+		for _, spelling := range []string{"ALICE@example.com", "  alice@EXAMPLE.com\t", "Alice@Example.Com"} {
+			assert.Equal(t, want, field(t, issue(t, c, spelling), 0, 1), spelling)
+		}
+	})
+
+	t.Run("case=other accounts have other pseudonyms", func(t *testing.T) {
+		t.Parallel()
+		seen := map[string]string{}
+		for _, id := range []string{alice, bob, carol, dave, "alice@example.org", "alice"} {
+			p := field(t, issue(t, c, id), 0, 1)
+			if other, dup := seen[p]; dup {
+				t.Errorf("%q and %q have the same pseudonym", id, other)
+			}
+			seen[p] = id
+		}
+	})
+
+	t.Run("case=another secret makes another pseudonym: nothing links deployments", func(t *testing.T) {
+		t.Parallel()
+		other := newCodec(t, knowndevicecookie.Config{}, "another-secret-key")
+		assert.NotEqual(t, field(t, issue(t, c, alice), 0, 1), field(t, issue(t, other, alice), 0, 1))
+	})
+
+	t.Run("case=the pseudonym is not the MAC key's: it does not depend on the cookie name", func(t *testing.T) {
+		t.Parallel()
+		named := newCodec(t, knowndevicecookie.Config{Name: "other"}, secret)
+		assert.Equal(t, field(t, issue(t, c, alice), 0, 1), field(t, issue(t, named, alice), 0, 1),
+			"the pseudonym stands for the account; the name binds the MAC")
+		assert.NotEqual(t, field(t, issue(t, c, alice), 0, 3), field(t, issue(t, named, alice), 0, 3))
+	})
+
+	t.Run("case=an entry cannot be moved to another account", func(t *testing.T) {
+		t.Parallel()
+		aliceEntry := strings.Split(issue(t, c, alice).Value, ".")
+		bobEntry := strings.Split(issue(t, c, bob).Value, ".")
+		aliceEntry[1] = bobEntry[1] // bob's pseudonym under alice's MAC
+		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(&http.Cookie{Name: knowndevicecookie.DefaultName, Value: strings.Join(aliceEntry, ".")}), bob))
+	})
+
+	t.Run("case=a pseudonym of the wrong length is malformed", func(t *testing.T) {
+		t.Parallel()
+		parts := strings.Split(issue(t, c, alice).Value, ".")
+		for _, p := range []string{"", "AAAA", base64.RawURLEncoding.EncodeToString(make([]byte, 17))} {
+			parts[1] = p
+			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(&http.Cookie{Name: knowndevicecookie.DefaultName, Value: strings.Join(parts, ".")}), alice), p)
+		}
+	})
 }
 
 func TestSecretRotation(t *testing.T) {
@@ -353,6 +434,38 @@ func TestSecretRotation(t *testing.T) {
 		t.Parallel()
 		dropped := newCodec(t, knowndevicecookie.Config{}, "new-secret-secret")
 		assert.Equal(t, defense.DeviceInvalid, dropped.Verify(request(oldCookie), alice))
+	})
+}
+
+// A pseudonym depends on the secret, so after a rotation the same account has one
+// pseudonym per secret: entries must still be found, and must not pile up.
+func TestSecretRotationPseudonyms(t *testing.T) {
+	t.Parallel()
+	oldC := newCodec(t, knowndevicecookie.Config{}, "old-secret-secret")
+	rotated := newCodec(t, knowndevicecookie.Config{}, "new-secret-secret", "old-secret-secret")
+
+	t.Run("case=an entry of the old secret still identifies its account", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, oldC, alice)
+		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(ck), alice))
+		assert.Equal(t, defense.DeviceNone, rotated.Verify(request(ck), bob))
+	})
+
+	t.Run("case=logging in again under the new secret replaces the old entry, not duplicates it", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, oldC, bob, issue(t, oldC, alice))
+		ck = issue(t, rotated, "ALICE@example.com", ck)
+
+		assert.Len(t, entries(ck), 2, "alice once, and bob")
+		assert.NotEqual(t, field(t, issue(t, oldC, alice), 0, 1), field(t, ck, 0, 1), "alice's entry is now under the new secret")
+		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(ck), alice))
+		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(ck), bob), "bob's entry, of the old secret, is carried over")
+	})
+
+	t.Run("case=once the old secret is dropped, its entries are forged to the new codec", func(t *testing.T) {
+		t.Parallel()
+		newOnly := newCodec(t, knowndevicecookie.Config{}, "new-secret-secret")
+		assert.Equal(t, defense.DeviceInvalid, newOnly.Verify(request(issue(t, oldC, alice)), alice))
 	})
 }
 

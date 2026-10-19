@@ -111,15 +111,16 @@ func knownDeviceCookie(res *http.Response) *http.Cookie {
 	return nil
 }
 
-func cookieIdentifiers(t *testing.T, c *http.Cookie) (ids []string) {
+// cookiePseudonyms returns the pseudonym, the second field, of each entry. The
+// cookie holds no identifier.
+func cookiePseudonyms(t *testing.T, c *http.Cookie) (pseudonyms []string) {
 	t.Helper()
 	for _, entry := range strings.Split(c.Value, "~") {
-		// The identifier is the plaintext second field of each entry.
 		parts := strings.Split(entry, ".")
 		require.Len(t, parts, 4)
-		ids = append(ids, parts[1])
+		pseudonyms = append(pseudonyms, parts[1])
 	}
-	return ids
+	return pseudonyms
 }
 
 func TestLoginKnownDeviceCookie(t *testing.T) {
@@ -184,7 +185,7 @@ func TestLoginKnownDeviceCookie(t *testing.T) {
 		assert.True(t, ck.HttpOnly)
 		assert.Equal(t, http.SameSiteLaxMode, ck.SameSite)
 		assert.Equal(t, int(knowndevicecookie.DefaultLifespan.Seconds()), ck.MaxAge)
-		assert.Len(t, cookieIdentifiers(t, ck), 1)
+		assert.Len(t, cookiePseudonyms(t, ck), 1)
 
 		f.rec.reset()
 		res = f.loginSPA(t, client, identifier, "password")
@@ -235,7 +236,7 @@ func TestLoginKnownDeviceCookie(t *testing.T) {
 		res := f.loginSPA(t, client, bob, "password")
 		require.Equal(t, http.StatusOK, res.StatusCode)
 		assert.Equal(t, defense.DeviceNone, f.lastDevice(t), "alice's cookie says nothing about bob")
-		assert.Len(t, cookieIdentifiers(t, knownDeviceCookie(res)), 2)
+		assert.Len(t, cookiePseudonyms(t, knownDeviceCookie(res)), 2)
 
 		for _, id := range []string{alice, bob} {
 			f.rec.reset()
@@ -278,7 +279,7 @@ func TestLoginKnownDeviceCookie(t *testing.T) {
 		assert.Equal(t, defense.DeviceInvalid, f.lastDevice(t))
 		ck := knownDeviceCookie(res)
 		require.NotNil(t, ck, "the login replaces the forged cookie")
-		assert.Len(t, cookieIdentifiers(t, ck), 1)
+		assert.Len(t, cookiePseudonyms(t, ck), 1)
 	})
 
 	t.Run("case=a cookie signed with another secret is invalid", func(t *testing.T) {

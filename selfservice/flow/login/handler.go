@@ -327,6 +327,10 @@ preLoginHook:
 	// We execute the fast login here because it requires the flow to be created first.
 	for _, s := range loginStrategies {
 		if strategy, ok := s.(FastLoginStrategy); ok {
+			if ds, ok := s.(DefendedStrategy); ok {
+				// In place, as in login: strategies keep the request body readable by replacing it on r.
+				*r = *r.WithContext(gate.With(r.Context(), gate.New(h.d, w, r, ds.DefenseMethod())))
+			}
 			if err := strategy.FastLogin2FA(w, r, f, sess); errors.Is(err, flow.ErrStrategyNotResponsible) {
 				continue
 			} else if errors.Is(err, flow.ErrCompletedByStrategy) {

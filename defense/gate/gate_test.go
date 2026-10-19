@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/ory/herodot"
 	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/defensetest"
 	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/knowndevicecookie"
@@ -28,40 +28,8 @@ import (
 	"github.com/ory/x/logrusx"
 )
 
-type call struct {
-	name    string
-	attempt defense.Attempt
-}
-
-type fakeDefense struct {
-	mu       sync.Mutex
-	calls    []call
-	decision defense.Decision
-	err      error
-}
-
-func (f *fakeDefense) record(name string, a defense.Attempt) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, call{name, a})
-}
-
-func (f *fakeDefense) BeforeAttempt(_ context.Context, a defense.Attempt) (defense.Decision, error) {
-	f.record("BeforeAttempt", a)
-	return f.decision, f.err
-}
-func (f *fakeDefense) AfterSuccess(_ context.Context, a defense.Attempt) { f.record("AfterSuccess", a) }
-func (f *fakeDefense) AfterFailure(_ context.Context, a defense.Attempt) { f.record("AfterFailure", a) }
-
-func (f *fakeDefense) names() (n []string) {
-	for _, c := range f.calls {
-		n = append(n, c.name)
-	}
-	return n
-}
-
 type deps struct {
-	defense *fakeDefense
+	defense *defensetest.Recorder
 	cfg     *config.Config
 	codec   *knowndevicecookie.Codec
 	log     *logrusx.Logger
@@ -78,7 +46,7 @@ func newDeps(t *testing.T) *deps {
 		configx.WithValue(config.ViperKeyDefenseFingerprintKey, "fingerprint-key-for-tests"))
 	codec, err := knowndevicecookie.New([][]byte{[]byte("device-secret-for-tests")}, knowndevicecookie.Config{})
 	require.NoError(t, err)
-	return &deps{defense: new(fakeDefense), cfg: cfg, codec: codec, log: logrusx.New("", "")}
+	return &deps{defense: new(defensetest.Recorder), cfg: cfg, codec: codec, log: logrusx.New("", "")}
 }
 
 func newRequest() *http.Request {
@@ -110,8 +78,8 @@ func TestCheck(t *testing.T) {
 		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodCode)
 		require.NoError(t, g.Check(t.Context(), " Alice@Example.com ", "123456"))
 
-		require.Equal(t, []string{"BeforeAttempt"}, d.defense.names())
-		a := d.defense.calls[0].attempt
+		require.Equal(t, []string{"BeforeAttempt"}, d.defense.Names())
+		a := d.defense.Calls()[0].Attempt
 		fp := defense.NewFingerprinter([]byte("fingerprint-key-for-tests"))
 		assert.Equal(t, defense.MethodCode, a.Method)
 		assert.Equal(t, fp.Identifier("alice@example.com"), a.IdentifierDigest)
@@ -123,7 +91,7 @@ func TestCheck(t *testing.T) {
 		t.Parallel()
 		d := newDeps(t)
 		require.NoError(t, gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPasskey).Check(t.Context(), "", ""))
-		a := d.defense.calls[0].attempt
+		a := d.defense.Calls()[0].Attempt
 		assert.True(t, a.IdentifierDigest.IsZero())
 		assert.True(t, a.CredentialDigest.IsZero())
 	})
@@ -142,16 +110,16 @@ func TestCheck(t *testing.T) {
 			defense.MethodTOTP:         defense.DeviceNone,
 			defense.MethodLookupSecret: defense.DeviceNone,
 		} {
-			d.defense.calls = nil
+			d.defense.Reset()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), r, method).Check(t.Context(), "alice@example.com", "x"))
-			assert.Equal(t, want, d.defense.calls[0].attempt.Device, method.String())
+			assert.Equal(t, want, d.defense.Calls()[0].Attempt.Device, method.String())
 		}
 	})
 
 	t.Run("case=deny returns 429 with Retry-After and is not reported afterwards", func(t *testing.T) {
 		t.Parallel()
 		d := newDeps(t)
-		d.defense.decision = defense.Decision{Verdict: defense.Deny, RetryAfter: 1500 * time.Millisecond}
+		d.defense.Answer(defense.Decision{Verdict: defense.Deny, RetryAfter: 1500 * time.Millisecond}, nil)
 		w := httptest.NewRecorder()
 		g := gate.New(d, w, newRequest(), defense.MethodPassword)
 
@@ -163,13 +131,13 @@ func TestCheck(t *testing.T) {
 		assert.Equal(t, "2", w.Header().Get("Retry-After"), "rounded up to whole seconds")
 
 		g.Done(t.Context(), false, err)
-		assert.Equal(t, []string{"BeforeAttempt"}, d.defense.names(), "a denied attempt says nothing about the credential")
+		assert.Equal(t, []string{"BeforeAttempt"}, d.defense.Names(), "a denied attempt says nothing about the credential")
 	})
 
 	t.Run("case=deny without RetryAfter sets no header", func(t *testing.T) {
 		t.Parallel()
 		d := newDeps(t)
-		d.defense.decision = defense.Decision{Verdict: defense.Deny}
+		d.defense.Answer(defense.Decision{Verdict: defense.Deny}, nil)
 		w := httptest.NewRecorder()
 		require.Error(t, gate.New(d, w, newRequest(), defense.MethodPassword).Check(t.Context(), "a", "b"))
 		assert.Empty(t, w.Header().Get("Retry-After"))
@@ -178,21 +146,20 @@ func TestCheck(t *testing.T) {
 	t.Run("case=a defense error fails open", func(t *testing.T) {
 		t.Parallel()
 		d := newDeps(t)
-		d.defense.err = errors.New("valkey is down")
 		// Whatever is returned next to the error is ignored.
-		d.defense.decision = defense.Decision{Verdict: defense.Deny, Delay: time.Hour}
+		d.defense.Answer(defense.Decision{Verdict: defense.Deny, Delay: time.Hour}, errors.New("valkey is down"))
 		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword)
 		assert.NoError(t, g.Check(t.Context(), "alice", "secret"))
 
 		g.Done(t.Context(), true, nil)
-		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, d.defense.names())
+		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, d.defense.Names())
 	})
 
 	t.Run("case=sleeps for the delay", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			d := newDeps(t)
-			d.defense.decision = defense.Decision{Delay: 5 * time.Second}
+			d.defense.Answer(defense.Decision{Delay: 5 * time.Second}, nil)
 			start := time.Now()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword).Check(t.Context(), "alice", "secret"))
 			assert.Equal(t, 5*time.Second, time.Since(start))
@@ -204,7 +171,7 @@ func TestCheck(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			d := newDeps(t)
 			require.NoError(t, d.cfg.Set(t.Context(), config.ViperKeyDefenseMaxDelay, "2s"))
-			d.defense.decision = defense.Decision{Delay: time.Hour}
+			d.defense.Answer(defense.Decision{Delay: time.Hour}, nil)
 			start := time.Now()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword).Check(t.Context(), "alice", "secret"))
 			assert.Equal(t, 2*time.Second, time.Since(start))
@@ -215,7 +182,7 @@ func TestCheck(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			d := newDeps(t)
-			d.defense.decision = defense.Decision{Delay: time.Minute}
+			d.defense.Answer(defense.Decision{Delay: time.Minute}, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			time.AfterFunc(time.Second, cancel)
 			start := time.Now()
@@ -250,9 +217,9 @@ func TestDone(t *testing.T) {
 			g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword)
 			require.NoError(t, g.Check(t.Context(), "alice", "secret"))
 			g.Done(t.Context(), tc.succeeded, tc.err)
-			assert.Equal(t, tc.want, d.defense.names())
-			for _, c := range d.defense.calls {
-				assert.Equal(t, d.defense.calls[0].attempt, c.attempt, "all calls of one attempt see the same Attempt")
+			assert.Equal(t, tc.want, d.defense.Names())
+			for _, c := range d.defense.Calls() {
+				assert.Equal(t, d.defense.Calls()[0].Attempt, c.Attempt, "all calls of one attempt see the same Attempt")
 			}
 		})
 	}
@@ -263,6 +230,6 @@ func TestDone(t *testing.T) {
 		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword)
 		g.Done(t.Context(), true, nil)
 		g.Done(t.Context(), false, schema.NewInvalidCredentialsError())
-		assert.Empty(t, d.defense.calls)
+		assert.Empty(t, d.defense.Calls())
 	})
 }

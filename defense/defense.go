@@ -34,6 +34,11 @@ const (
 	MethodTOTP
 	MethodWebAuthn
 	MethodPasskey
+	// MethodIdentifierFirst is the identifier-first step of a login: the client
+	// names an account and no credential is checked. The step may look the
+	// account up and send a code to it, so it is defended like a route that
+	// sends messages. After calls say nothing about credentials.
+	MethodIdentifierFirst
 	// MethodRecovery, MethodVerification and MethodRegistration are not
 	// credential checks but the routes of those flows that send a message to
 	// an address named by the client. The identifier digest is that address.
@@ -46,7 +51,7 @@ const (
 
 var methodNames = [NumMethods]string{
 	"unknown", "password", "code", "lookup_secret", "app_password",
-	"totp", "webauthn", "passkey", "recovery", "verification", "registration",
+	"totp", "webauthn", "passkey", "identifier_first", "recovery", "verification", "registration",
 }
 
 // String returns the stable name of the method, for logs and metrics.

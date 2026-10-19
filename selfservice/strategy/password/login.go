@@ -83,7 +83,8 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 
 	identifier := cmp.Or(p.Identifier, p.LegacyIdentifier)
 
-	// BeforeAttempt, ahead of the database lookup and the hashing. The outcome is reported by the login handler.
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
 	if err := gate.From(ctx).Check(ctx, identifier, p.Password); err != nil {
 		return nil, s.handleLoginError(r, f, p, err)
 	}

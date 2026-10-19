@@ -78,6 +78,8 @@ type Config struct {
 	Domain, Path string
 	// Secure sets the Secure attribute.
 	Secure bool
+	// SameSite sets the SameSite attribute. Default http.SameSiteLaxMode.
+	SameSite http.SameSite
 }
 
 // Provider gives access to the KnownDeviceCookie Codec.
@@ -117,6 +119,9 @@ func New(secrets [][]byte, cfg Config) (*Codec, error) {
 	}
 	if cfg.Path == "" {
 		cfg.Path = "/"
+	}
+	if cfg.SameSite == 0 {
+		cfg.SameSite = http.SameSiteLaxMode
 	}
 	keys := make([][]byte, len(secrets))
 	for i, s := range secrets {
@@ -170,7 +175,7 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 		MaxAge:   int(c.cfg.Lifespan / time.Second),
 		Secure:   c.cfg.Secure,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: c.cfg.SameSite,
 	})
 	return nil
 }
@@ -190,6 +195,7 @@ func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	if c == nil {
 		return defense.DeviceNone
 	}
+	// A password change does not revoke the cookie: it only marks the device as known to the account and never grants a login.
 	ck, err := r.Cookie(c.cfg.Name)
 	if err != nil {
 		return defense.DeviceNone

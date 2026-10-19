@@ -596,6 +596,8 @@ func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecoo
 		Domain:   c.SessionDomain(ctx),
 		Path:     c.SessionPath(ctx),
 		Secure:   c.SessionCookieSecure(ctx),
+		// Same as the session cookie: the browser sends it on the login POST exactly when it sends the session and CSRF cookies.
+		SameSite: c.SessionSameSiteMode(ctx),
 	})
 	if err != nil {
 		m.Logger().WithError(err).Error("Unable to set up the known device cookie, it is disabled.")

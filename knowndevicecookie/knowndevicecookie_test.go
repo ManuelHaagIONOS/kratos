@@ -88,6 +88,14 @@ func TestIssue(t *testing.T) {
 		assert.Equal(t, http.SameSiteLaxMode, ck.SameSite)
 	})
 
+	t.Run("case=same site follows the config", func(t *testing.T) {
+		t.Parallel()
+		for _, mode := range []http.SameSite{http.SameSiteStrictMode, http.SameSiteNoneMode} {
+			ck := issue(t, newCodec(t, knowndevicecookie.Config{SameSite: mode}, "secret-secret-secret"), alice)
+			assert.Equal(t, mode, ck.SameSite)
+		}
+	})
+
 	t.Run("case=defaults", func(t *testing.T) {
 		t.Parallel()
 		ck := issue(t, newCodec(t, knowndevicecookie.Config{Name: "dev", Lifespan: time.Hour}, "secret-secret-secret"), alice)

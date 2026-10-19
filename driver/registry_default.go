@@ -555,6 +555,11 @@ func (m *RegistryDefault) TOTPCipher(ctx context.Context) cipher.AADCipher {
 	})
 }
 
+// SettingsFlowPersister seals the pending TOTP secret of a settings flow, see totp.FlowPersister.
+func (m *RegistryDefault) SettingsFlowPersister() settings.FlowPersister {
+	return totp.NewFlowPersister(m.persister, m)
+}
+
 // checkTOTPSecrets refuses to start with a malformed `secrets.totp`, and warns while TOTP secrets are not (all)
 // protected. It never falls back to `secrets.cipher`.
 func (m *RegistryDefault) checkTOTPSecrets(ctx context.Context) error {
@@ -868,7 +873,6 @@ func (m *RegistryDefault) GetFlowForTokenExchange(ctx context.Context, flowID uu
 func (m *RegistryDefault) RegistrationFlowPersister() registration.FlowPersister { return m.persister }
 func (m *RegistryDefault) RecoveryFlowPersister() recovery.FlowPersister         { return m.persister }
 func (m *RegistryDefault) LoginFlowPersister() login.FlowPersister               { return m.persister }
-func (m *RegistryDefault) SettingsFlowPersister() settings.FlowPersister         { return m.persister }
 func (m *RegistryDefault) SelfServiceErrorPersister() errorx.Persister           { return m.persister }
 func (m *RegistryDefault) SessionPersister() session.Persister                   { return m.persister }
 func (m *RegistryDefault) CourierPersister() courier.Persister                   { return m.persister }

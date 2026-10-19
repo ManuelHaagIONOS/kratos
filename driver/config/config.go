@@ -163,6 +163,8 @@ const (
 	ViperKeyDefaultIdentitySchemaID                          = "identity.default_schema_id"
 	ViperKeyIdentitySchemas                                  = "identity.schemas"
 	ViperKeyDefenseFingerprintKey                            = "defense.fingerprint_key"
+	ViperKeyDefenseClientIPHeader                            = "defense.client_ip.header"
+	ViperKeyDefenseClientIPTrustedProxies                    = "defense.client_ip.trusted_proxies"
 	ViperKeyDefenseMaxDelay                                  = "defense.max_delay"
 	ViperKeyKnownDeviceCookieEnabled                         = "defense.known_device_cookie.enabled"
 	ViperKeyKnownDeviceCookieSecrets                         = "defense.known_device_cookie.secrets"
@@ -582,6 +584,13 @@ func (p *Config) SessionName(ctx context.Context) string {
 // on a single attempt.
 func (p *Config) DefenseMaxDelay(ctx context.Context) time.Duration {
 	return p.GetProvider(ctx).DurationF(ViperKeyDefenseMaxDelay, DefenseDefaultMaxDelay)
+}
+
+// DefenseTrustedProxies says whose forwarding header gives the client's address.
+// Unset, no header is believed. An invalid CIDR is an error (see the schema).
+func (p *Config) DefenseTrustedProxies(ctx context.Context) (httpx.TrustedProxies, error) {
+	pr := p.GetProvider(ctx)
+	return httpx.ParseTrustedProxies(pr.String(ViperKeyDefenseClientIPHeader), pr.Strings(ViperKeyDefenseClientIPTrustedProxies))
 }
 
 // DefenseFingerprintSecret is the secret from which the identifier and

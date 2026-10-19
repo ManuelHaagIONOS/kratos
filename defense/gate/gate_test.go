@@ -25,6 +25,7 @@ import (
 	"github.com/ory/kratos/schema"
 	"github.com/ory/x/configx"
 	"github.com/ory/x/contextx"
+	"github.com/ory/x/httpx"
 	"github.com/ory/x/logrusx"
 )
 
@@ -287,4 +288,33 @@ func TestInstall(t *testing.T) {
 	r := newRequest()
 	g := gate.Install(d, httptest.NewRecorder(), r, defense.MethodRecovery)
 	assert.Same(t, g, gate.From(r.Context()), "installed on the request itself, so a body swapped by a strategy stays visible to the next")
+}
+
+func TestCheckClientIP(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, peer string
+		want       string
+	}{
+		{"spoofed header from an untrusted peer", "198.51.100.7:1", "198.51.100.7"},
+		{"header from a trusted proxy", "10.0.0.1:1", "203.0.113.9"},
+	} {
+		t.Run("case="+tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := newDeps(t)
+			r := newRequest()
+			r.RemoteAddr = tc.peer
+			r.Header.Set("True-Client-IP", "203.0.113.9")
+			tp, err := httpx.ParseTrustedProxies("True-Client-IP", []string{"10.0.0.0/8"})
+			require.NoError(t, err)
+			r = r.WithContext(httpx.ContextWithClientInfo(r, tp))
+
+			g := gate.New(d, httptest.NewRecorder(), r, defense.MethodCode)
+			require.NoError(t, g.Check(t.Context(), "alice", "123456"))
+			calls := d.defense.Calls()
+			require.NotEmpty(t, calls)
+			assert.Equal(t, tc.want, calls[0].Attempt.IP.String())
+		})
+	}
 }

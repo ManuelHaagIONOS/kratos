@@ -6,6 +6,7 @@ package session_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -22,7 +23,18 @@ import (
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/configx"
 	"github.com/ory/x/contextx"
+	"github.com/ory/x/httpx"
 )
+
+// viaTrustedProxy makes the request come from a trusted proxy that sets the header,
+// as forwarding headers count only from one.
+func viaTrustedProxy(t *testing.T, req *http.Request, header string) *http.Request {
+	t.Helper()
+	tp, err := httpx.ParseTrustedProxies(header, []string{"10.0.0.0/8", "172.16.0.0/12"})
+	require.NoError(t, err)
+	req.RemoteAddr = "10.0.0.1:4711"
+	return req.WithContext(httpx.ContextWithClientInfo(req, tp))
+}
 
 func TestAdminSessionMarshal(t *testing.T) {
 	t.Parallel()
@@ -154,7 +166,7 @@ func TestSession(t *testing.T) {
 		}{
 			{
 				input:    "10.10.8.1, 172.19.2.7",
-				expected: "",
+				expected: "10.0.0.1", // all proxies: the peer
 			},
 			{
 				input:    "217.73.188.139,162.158.203.149, 172.19.2.7",
@@ -170,6 +182,7 @@ func TestSession(t *testing.T) {
 				req.Header["User-Agent"] = []string{"Mozilla/5.0 (X11; Linux x86_64)", "AppleWebKit/537.36 (KHTML, like Gecko)", "Chrome/51.0.2704.103 Safari/537.36"}
 				req.Header.Set("X-Forwarded-For", tc.input)
 
+				req = viaTrustedProxy(t, req, "X-Forwarded-For")
 				s := session.NewInactiveSession()
 				require.NoError(t, reg.SessionManager().ActivateSession(req, s, &identity.Identity{NID: x.NewUUID(), State: identity.StateActive}, authAt))
 				assert.True(t, s.Active)
@@ -190,6 +203,7 @@ func TestSession(t *testing.T) {
 		req.Header.Set("X-Real-IP", "54.155.246.155")
 		req.Header["X-Forwarded-For"] = []string{"54.155.246.232", "10.145.1.10"}
 
+		req = viaTrustedProxy(t, req, "X-Real-IP")
 		s := session.NewInactiveSession()
 		require.NoError(t, reg.SessionManager().ActivateSession(req, s, &identity.Identity{NID: x.NewUUID(), State: identity.StateActive}, authAt))
 		assert.True(t, s.Active)
@@ -210,6 +224,7 @@ func TestSession(t *testing.T) {
 		req.Header.Set("True-Client-IP", "54.155.246.155")
 		req.Header.Set("X-Forwarded-For", "217.73.188.139,162.158.203.149, 172.19.2.7")
 
+		req = viaTrustedProxy(t, req, "True-Client-IP")
 		s := session.NewInactiveSession()
 		require.NoError(t, reg.SessionManager().ActivateSession(req, s, &identity.Identity{State: identity.StateActive, NID: x.NewUUID()}, authAt))
 		assert.True(t, s.Active)
@@ -224,6 +239,23 @@ func TestSession(t *testing.T) {
 		assert.Equal(t, "", *s.Devices[0].Location)
 	})
 
+	t.Run("case=client information forged headers from an untrusted peer", func(t *testing.T) {
+		req := testhelpers.NewTestHTTPRequest(t, "GET", "/sessions/whoami", nil)
+		req.Header.Set("True-Client-IP", "1.2.3.4")
+		req.Header.Set("X-Forwarded-For", "1.2.3.4")
+		req.Header.Set("Cf-Ipcity", "Munich")
+		req.Header.Set("Cf-Ipcountry", "Germany")
+		req.RemoteAddr = "198.51.100.7:4711"
+		tp, err := httpx.ParseTrustedProxies("True-Client-IP", []string{"10.0.0.0/8"})
+		require.NoError(t, err)
+		req = req.WithContext(httpx.ContextWithClientInfo(req, tp))
+
+		s := session.NewInactiveSession()
+		require.NoError(t, reg.SessionManager().ActivateSession(req, s, &identity.Identity{NID: x.NewUUID(), State: identity.StateActive}, authAt))
+		assert.Equal(t, "198.51.100.7", *s.Devices[0].IPAddress)
+		assert.Equal(t, "", *s.Devices[0].Location)
+	})
+
 	t.Run("case=client information CF", func(t *testing.T) {
 		req := testhelpers.NewTestHTTPRequest(t, "GET", "/sessions/whoami", nil)
 		req.Header["User-Agent"] = []string{"Mozilla/5.0 (X11; Linux x86_64)", "AppleWebKit/537.36 (KHTML, like Gecko)", "Chrome/51.0.2704.103 Safari/537.36"}
@@ -231,6 +263,7 @@ func TestSession(t *testing.T) {
 		req.Header.Set("Cf-Ipcity", "Munich")
 		req.Header.Set("Cf-Ipcountry", "Germany")
 
+		req = viaTrustedProxy(t, req, "True-Client-IP")
 		s := session.NewInactiveSession()
 		require.NoError(t, reg.SessionManager().ActivateSession(req, s, &identity.Identity{NID: x.NewUUID(), State: identity.StateActive}, authAt))
 		assert.True(t, s.Active)

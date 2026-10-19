@@ -15,8 +15,7 @@
 //
 // Verification cost and cookie size are bounded whatever a client sends: a
 // value over MaxValueLength or with more than MaxEntries entries is rejected
-// before any crypto, and Verify computes one HMAC per secret, for the entry of
-// the identifier being attempted only.
+// before any crypto, and Verify computes at most MaxEntries HMACs per secret.
 //
 // Signing keys are derived with HKDF-SHA256 from the configured secrets. The
 // first secret signs, all of them verify, so secrets rotate by prepending a
@@ -165,13 +164,14 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 // Verify returns the verdict on the cookie of r for the identifier being
 // attempted. It does no I/O.
 //
-//   - DeviceNone: no cookie, or a well-formed one without a current entry for
+//   - DeviceNone: no cookie, or an authentic one without a current entry for
 //     the identifier. On a shared device that is a new account, not a suspect.
 //     An expired entry is authentic but stale, a returning user whose entry
 //     ran out.
 //   - DeviceInvalid: a cookie that is malformed, oversized or has too many
-//     entries, or an entry for the identifier whose MAC fails.
-//   - DeviceKnown: a valid, unexpired entry for the identifier.
+//     entries, or any entry of which fails its MAC, whichever account it is for.
+//   - DeviceKnown: an authentic cookie with a valid, unexpired entry for the
+//     identifier.
 func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	ck, err := r.Cookie(c.cfg.Name)
 	if err != nil {
@@ -188,7 +188,9 @@ func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	var match *entry
 	for _, raw := range raws {
 		e, ok := parseEntry(raw)
-		if !ok {
+		// One bad entry condemns the whole cookie, whichever account it is for:
+		// a cookie someone has tampered with is not to be trusted at all.
+		if !ok || !c.validMAC(e) {
 			return defense.DeviceInvalid
 		}
 		if match == nil && e.id == id {
@@ -198,8 +200,6 @@ func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	switch {
 	case match == nil:
 		return defense.DeviceNone
-	case !c.validMAC(*match):
-		return defense.DeviceInvalid
 	case c.expired(*match):
 		return defense.DeviceNone
 	}

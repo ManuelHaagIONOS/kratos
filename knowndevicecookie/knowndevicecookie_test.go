@@ -185,12 +185,18 @@ func TestVerify(t *testing.T) {
 		}
 	})
 
-	t.Run("case=an entry with a swapped identifier is none for the original", func(t *testing.T) {
+	t.Run("case=a bad entry condemns the cookie for every account", func(t *testing.T) {
 		t.Parallel()
 		bobEntry := strings.Split(issue(t, c, bob).Value, ".")
 		parts := strings.Split(good.Value, ".")
-		parts[1] = bobEntry[1]
-		assert.Equal(t, defense.DeviceNone, c.Verify(request(withValue(good, strings.Join(parts, "."))), alice))
+		parts[1] = bobEntry[1] // alice's MAC under bob's identifier
+		forged := strings.Join(parts, ".")
+
+		both := withValue(good, good.Value+"~"+forged)
+		for _, id := range []string{alice, bob, carol} {
+			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(withValue(good, forged)), id), id)
+			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(both), id), "next to a good entry: "+id)
+		}
 	})
 
 	t.Run("case=signed with another secret", func(t *testing.T) {

@@ -5,11 +5,13 @@ package defense_test
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/x"
 )
 
 func TestFingerprinter(t *testing.T) {
@@ -22,6 +24,31 @@ func TestFingerprinter(t *testing.T) {
 		assert.Equal(t, f.Identifier("alice@example.com"), f.Identifier("  Alice@Example.COM "))
 		assert.Equal(t, f.Identifier("ﬁle@example.com"), f.Identifier("file@example.com"), "NFKC")
 		assert.NotEqual(t, f.Identifier("alice@example.com"), f.Identifier("bob@example.com"))
+	})
+
+	t.Run("case=every variant that finds the same identity shares its digest", func(t *testing.T) {
+		t.Parallel()
+		// Kratos looks password, code and WebAuthn identifiers up after
+		// x.GracefulNormalization. A variant it maps to the same identity but the
+		// defense to another digest would get a fresh failure budget for that
+		// identity: one per invisible rune inserted anywhere.
+		var variants []string
+		for _, base := range []string{"victim@example.com", "+49 170 1234567", "some.user"} {
+			variants = append(variants, base, strings.ToUpper(base), " "+base+"\t")
+			for _, r := range []rune{'\u200b', '\u00ad', '\u200d', '\u2060', '\ufeff', '\u202e', '\u2066'} {
+				for i := range base {
+					variants = append(variants, base[:i]+string(r)+base[i:])
+				}
+			}
+		}
+		variants = append(variants, "ｖｉｃｔｉｍ＠ｅｘａｍｐｌｅ．ｃｏｍ", "+491701234567", "+49-170-123 4567", "+49 (170) 1234567")
+		for _, a := range variants {
+			for _, b := range variants {
+				if x.GracefulNormalization(a) == x.GracefulNormalization(b) {
+					assert.Equal(t, f.Identifier(a), f.Identifier(b), "%q and %q find the same identity", a, b)
+				}
+			}
+		}
 	})
 
 	t.Run("case=credential is not canonicalized", func(t *testing.T) {

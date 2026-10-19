@@ -11,7 +11,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/text/unicode/norm"
+
+	"github.com/ory/kratos/x"
 )
 
 // Fingerprinter derives the digests carried by Attempt. Identifier, scope and
@@ -61,10 +62,13 @@ func mac(key []byte, s string) (d Digest) {
 	return d
 }
 
-// Canonicalize trims, applies Unicode NFKC and lowercases an identifier, so
-// that trivial variants of one account share counters.
+// Canonicalize normalizes an identifier as Kratos does before it looks an
+// identity up (x.GracefulNormalization: invisible and bidi characters dropped,
+// NFKC, width folded, lowercased, phone numbers in E.164), so that every variant
+// that finds one identity shares its counters. A weaker normalization would give
+// each variant, e.g. one zero-width space more, a fresh failure budget.
 func Canonicalize(identifier string) string {
-	return strings.ToLower(norm.NFKC.String(strings.TrimSpace(identifier)))
+	return x.GracefulNormalization(identifier)
 }
 
 // ParseIP parses a client address, with or without port, and unmaps

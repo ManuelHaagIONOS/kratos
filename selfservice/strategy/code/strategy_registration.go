@@ -6,6 +6,7 @@ package code
 import (
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"strings"
 
@@ -170,6 +171,10 @@ func (s *Strategy) validateAndGetCredentialsFromTraits(ctx context.Context, i *i
 	return cred, &conf, nil
 }
 
+var _ registration.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) RegistrationDefended() {}
+
 func (s *Strategy) Register(w http.ResponseWriter, r *http.Request, f *registration.Flow, i *identity.Identity) (err error) {
 	ctx, span := s.deps.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.code.Strategy.Register")
 	defer otelx.End(span, &err)
@@ -222,6 +227,18 @@ func (s *Strategy) registrationSendEmail(ctx context.Context, w http.ResponseWri
 	// Step 1: validate the identity's traits
 	_, conf, err := s.validateAndGetCredentialsFromTraits(ctx, i, p.Traits)
 	if err != nil {
+		return err
+	}
+
+	// Defense: Check via the gate, before any hashing, lookup or sending. Only a strategy can call it, as only it knows it
+	// is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the registration handler reports them.
+	// This step sends a code to the address, so it is defended like a route that sends messages. The address is only
+	// known from the traits once they are validated, which is cheap and does not touch the database.
+	var identifier string
+	if len(conf.Addresses) > 0 {
+		identifier = conf.Addresses[0].Address
+	}
+	if err := gate.From(ctx).Check(ctx, identifier, ""); err != nil {
 		return err
 	}
 
@@ -331,6 +348,17 @@ func (s *Strategy) registrationVerifyCode(ctx context.Context, f *registration.F
 	}
 
 	// Step 3: Attempt to use the code
+	// Defense: Check via the gate, before any hashing, lookup or sending. Only a strategy can call it, as only it knows it
+	// is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the registration handler reports them.
+	// A code is guessable: this is the step to defend most.
+	var identifier string
+	if len(cred.Identifiers) > 0 {
+		identifier = cred.Identifiers[0]
+	}
+	if err := gate.From(ctx).Check(ctx, identifier, p.Code); err != nil {
+		return err
+	}
+
 	registrationCode, err := s.deps.RegistrationCodePersister().UseRegistrationCode(ctx, f.ID, p.Code, cred.Identifiers...)
 	if err != nil {
 		if errors.Is(err, ErrCodeNotFound()) {

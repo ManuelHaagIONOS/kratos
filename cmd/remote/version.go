@@ -26,22 +26,24 @@ func (v *versionValue) Interface() interface{} {
 	return v
 }
 
-var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print the version of an Ory Kratos instance",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := cliclient.NewClient(cmd)
-		if err != nil {
-			return err
-		}
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version of an Ory Kratos instance",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := cliclient.NewClient(cmd)
+			if err != nil {
+				return err
+			}
 
-		resp, _, err := c.MetadataAPI.GetVersion(cmd.Context()).Execute()
-		if err != nil {
-			return err
-		}
+			resp, _, err := c.MetadataAPI.GetVersion(cmd.Context()).Execute()
+			if err != nil {
+				return err
+			}
 
-		cmdx.PrintRow(cmd, &versionValue{Version: resp.Version})
-		return nil
-	},
+			cmdx.PrintRow(cmd, &versionValue{Version: resp.Version})
+			return nil
+		},
+	}
 }

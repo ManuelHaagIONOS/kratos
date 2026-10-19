@@ -123,6 +123,75 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			require.ErrorIs(t, err, courier.ErrQueueEmpty)
 		})
 
+		t.Run("case=a message that is sent or abandoned loses its body and template data", func(t *testing.T) {
+			type content struct {
+				Status       courier.MessageStatus `db:"status"`
+				Body         string                `db:"body"`
+				Subject      string                `db:"subject"`
+				Recipient    string                `db:"recipient"`
+				TemplateData []byte                `db:"template_data"`
+			}
+			read := func(t *testing.T, id uuid.UUID) (c content) {
+				t.Helper()
+				require.NoError(t, p.GetConnection(ctx).RawQuery(
+					"SELECT status, body, subject, recipient, template_data FROM courier_messages WHERE id = ? AND nid = ?",
+					id, nid).First(&c))
+				return c
+			}
+			// The messages of the other cases stay as they are: this case adds its
+			// own, with something in them, and removes them again.
+			add := func(t *testing.T) uuid.UUID {
+				t.Helper()
+				var m courier.Message
+				require.NoError(t, faker.FakeData(&m))
+				m.Body, m.TemplateData = "your code is 123456", []byte(`{"code":"123456"}`)
+				require.NoError(t, p.AddMessage(ctx, &m))
+				t.Cleanup(func() {
+					require.NoError(t, p.GetConnection(ctx).RawQuery(
+						"DELETE FROM courier_messages WHERE id = ? AND nid = ?", m.ID, nid).Exec())
+				})
+				return m.ID
+			}
+
+			for _, status := range []courier.MessageStatus{courier.MessageStatusSent, courier.MessageStatusAbandoned} {
+				t.Run("status="+status.String(), func(t *testing.T) {
+					id := add(t)
+					before := read(t, id)
+					require.Equal(t, "your code is 123456", before.Body)
+					require.NotEmpty(t, before.TemplateData)
+
+					require.NoError(t, p.SetMessageStatus(ctx, id, status))
+					after := read(t, id)
+					assert.Equal(t, status, after.Status)
+					assert.Empty(t, after.Body)
+					assert.Empty(t, after.TemplateData)
+					assert.Equal(t, before.Subject, after.Subject, "only the body and the template data are blanked")
+					assert.Equal(t, before.Recipient, after.Recipient)
+				})
+			}
+
+			for _, status := range []courier.MessageStatus{courier.MessageStatusQueued, courier.MessageStatusProcessing} {
+				t.Run("status="+status.String()+" keeps them", func(t *testing.T) {
+					id := add(t)
+					require.NoError(t, p.SetMessageStatus(ctx, id, status))
+					after := read(t, id)
+					assert.Equal(t, status, after.Status)
+					assert.Equal(t, "your code is 123456", after.Body)
+					assert.NotEmpty(t, after.TemplateData)
+				})
+			}
+
+			t.Run("other messages are untouched", func(t *testing.T) {
+				id, other := add(t), add(t)
+				require.NoError(t, p.SetMessageStatus(ctx, id, courier.MessageStatusSent))
+				assert.Equal(t, "your code is 123456", read(t, other).Body)
+			})
+
+			t.Run("an unknown message is an error", func(t *testing.T) {
+				assert.Error(t, p.SetMessageStatus(ctx, uuid.Must(uuid.NewV4()), courier.MessageStatusSent))
+			})
+		})
+
 		t.Run("case=incrementing send count", func(t *testing.T) {
 			originalSendCount := messages[0].SendCount
 			require.NoError(t, p.SetMessageStatus(ctx, messages[0].ID, courier.MessageStatusQueued))

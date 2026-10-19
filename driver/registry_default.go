@@ -25,10 +25,12 @@ import (
 	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/continuity"
 	"github.com/ory/kratos/courier"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/hydra"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/persistence"
 	"github.com/ory/kratos/persistence/sql"
 	"github.com/ory/kratos/schema"
@@ -79,6 +81,9 @@ type RegistryDefault struct {
 	l *logrusx.Logger
 	c *config.Config
 
+	// knownDeviceAutoOnce logs once that the known device cookie follows the defense.
+	knownDeviceAutoOnce sync.Once
+
 	// clock is the time source for time-dependent behavior such as flow expiry.
 	// It is set eagerly in initCheapMembers and replaced in tests via SetClock.
 	clock clock.Clock
@@ -88,6 +93,7 @@ type RegistryDefault struct {
 	injectedSelfserviceHooks map[string]NewHookFn
 	extraHandlerFactories    []NewHandler
 	extraHandlers            []x.Handler
+	defense                  defense.Defense
 	slOptions                *servicelocatorx.Options
 
 	nosurf         nosurf.Handler
@@ -566,6 +572,52 @@ func (m *RegistryDefault) Hasher(ctx context.Context) hash.Hasher {
 	})
 }
 
+// WithDefense replaces the Defense returned by Defense(). See WithDefense option.
+func (m *RegistryDefault) WithDefense(d defense.Defense) {
+	m.defense = d
+}
+
+// Defense returns the injected Defense, or a no-op if none was injected.
+func (m *RegistryDefault) Defense() defense.Defense {
+	if m.defense == nil {
+		return defense.Noop{}
+	}
+	return m.defense
+}
+
+// KnownDeviceCookie returns the codec for the KnownDeviceCookie, or nil if it
+// is not enabled: forced by defense.known_device_cookie.enabled, or, at its
+// default auto, when the attack defense uses the verdict. It is built per call so that secret and config changes apply
+// on hot reload; deriving the keys costs a few hashes.
+func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecookie.Codec {
+	c := m.Config()
+	switch c.KnownDeviceCookieMode(ctx) {
+	case config.KnownDeviceCookieOff:
+		return nil
+	case config.KnownDeviceCookieAuto:
+		if !m.Defense().UsesKnownDeviceVerdict() {
+			return nil
+		}
+		m.knownDeviceAutoOnce.Do(func() {
+			m.Logger().Info("The known device cookie is enabled because the attack defense uses it. Set defense.known_device_cookie.enabled to false to turn it off.")
+		})
+	}
+	codec, err := knowndevicecookie.New(c.KnownDeviceCookieSecrets(ctx), knowndevicecookie.Config{
+		Name:     c.KnownDeviceCookieName(ctx),
+		Lifespan: c.KnownDeviceCookieLifespan(ctx),
+		Domain:   c.SessionDomain(ctx),
+		Path:     c.SessionPath(ctx),
+		Secure:   c.SessionCookieSecure(ctx),
+		// Same as the session cookie: the browser sends it on the login POST exactly when it sends the session and CSRF cookies.
+		SameSite: c.SessionSameSiteMode(ctx),
+	})
+	if err != nil {
+		m.Logger().WithError(err).Error("Unable to set up the known device cookie, it is disabled.")
+		return nil
+	}
+	return codec
+}
+
 func (m *RegistryDefault) PasswordValidator() password.Validator {
 	m.passwordValidator.Get(func() password.Validator {
 		val, err := password.NewDefaultPasswordValidatorStrategy(m)
@@ -689,6 +741,9 @@ func (m *RegistryDefault) Init(ctx context.Context, ctxer contextx.Contextualize
 	}
 	if o.extraHashers != nil {
 		m.WithHashers(o.extraHashers)
+	}
+	if o.defense != nil {
+		m.WithDefense(o.defense)
 	}
 	if o.extraHandlers != nil {
 		m.WithExtraHandlers(o.extraHandlers)

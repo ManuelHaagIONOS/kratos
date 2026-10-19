@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
@@ -87,6 +89,10 @@ type updateLoginFlowWithLookupSecretMethod struct {
 	Code string `json:"lookup_secret"`
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodLookupSecret }
+
 func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, sess *session.Session) (i *identity.Identity, err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.lookup.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -109,6 +115,13 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 
 	if err := flow.EnsureCSRF(s.d, r, f.Type, s.d.Config().DisableAPIFlowEnforcement(ctx), s.d.GenerateCSRFToken, p.CSRFToken); err != nil {
+		return nil, s.handleLoginError(r, f, err)
+	}
+
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	// The account is the one of the session: a second factor follows a verified first one.
+	if err := gate.From(ctx).Check(ctx, sess.IdentityID.String(), p.Code); err != nil {
 		return nil, s.handleLoginError(r, f, err)
 	}
 

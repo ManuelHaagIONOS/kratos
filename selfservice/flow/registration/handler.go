@@ -4,6 +4,8 @@
 package registration
 
 import (
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 
@@ -64,6 +66,7 @@ type (
 		ErrorHandlerProvider
 		sessiontokenexchange.PersistenceProvider
 		logrusx.Provider
+		gate.Dependencies
 	}
 	HandlerProvider interface {
 		RegistrationHandler() *Handler
@@ -74,6 +77,22 @@ type (
 )
 
 func NewHandler(d handlerDependencies) *Handler { return &Handler{d: d} }
+
+// register runs a strategy behind the defense gate. The strategy enters it with
+// Check, where it is responsible and has its payload, before any hashing or
+// sending. Here the outcome is reported for all strategies alike: the strategy
+// returns nil once the registration is accepted, and an error the client caused
+// is a failure; a step that only sent a code returns ErrCompletedByStrategy and
+// reports nothing.
+func (h *Handler) register(ss Strategy, w http.ResponseWriter, r *http.Request, f *Flow, i *identity.Identity) error {
+	if _, ok := ss.(DefendedStrategy); !ok {
+		return ss.Register(w, r, f, i)
+	}
+	g := gate.Install(h.d, w, r, defense.MethodRegistration)
+	err := ss.Register(w, r, f, i)
+	g.Done(r.Context(), err == nil, err)
+	return err
+}
 
 func (h *Handler) RegisterPublicRoutes(public *httprouterx.RouterPublic) {
 	h.d.CSRFHandler().IgnorePath(RouteInitAPIFlow)
@@ -732,7 +751,7 @@ func (h *Handler) updateRegistrationFlow(w http.ResponseWriter, r *http.Request)
 	i := identity.NewIdentity(f.IdentitySchema.ID(ctx, h.d.Config()))
 	var s Strategy
 	for _, ss := range h.d.AllRegistrationStrategies() {
-		if err := ss.Register(w, r, f, i); errors.Is(err, flow.ErrStrategyNotResponsible) {
+		if err := h.register(ss, w, r, f, i); errors.Is(err, flow.ErrStrategyNotResponsible) {
 			continue
 		} else if errors.Is(err, flow.ErrCompletedByStrategy) {
 			return

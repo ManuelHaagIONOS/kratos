@@ -18,6 +18,7 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/persistence"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/errorx"
@@ -87,6 +88,7 @@ type Registry interface {
 	cipher.Provider
 
 	defense.Provider
+	knowndevicecookie.Provider
 
 	courier.Provider
 

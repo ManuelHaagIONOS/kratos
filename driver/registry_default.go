@@ -30,6 +30,7 @@ import (
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/hydra"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/persistence"
 	"github.com/ory/kratos/persistence/sql"
 	"github.com/ory/kratos/schema"
@@ -579,6 +580,28 @@ func (m *RegistryDefault) Defense() defense.Defense {
 		return defense.Noop{}
 	}
 	return m.defense
+}
+
+// KnownDeviceCookie returns the codec for the KnownDeviceCookie, or nil if it
+// is not enabled. It is built per call so that secret and config changes apply
+// on hot reload; deriving the keys costs a few hashes.
+func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecookie.Codec {
+	c := m.Config()
+	if !c.KnownDeviceCookieEnabled(ctx) {
+		return nil
+	}
+	codec, err := knowndevicecookie.New(c.KnownDeviceCookieSecrets(ctx), knowndevicecookie.Config{
+		Name:     c.KnownDeviceCookieName(ctx),
+		Lifespan: c.KnownDeviceCookieLifespan(ctx),
+		Domain:   c.SessionDomain(ctx),
+		Path:     c.SessionPath(ctx),
+		Secure:   c.SessionCookieSecure(ctx),
+	})
+	if err != nil {
+		m.Logger().WithError(err).Error("Unable to set up the known device cookie, it is disabled.")
+		return nil
+	}
+	return codec
 }
 
 func (m *RegistryDefault) PasswordValidator() password.Validator {

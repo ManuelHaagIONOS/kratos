@@ -2922,6 +2922,12 @@
           "description": "A long-lived signed cookie, set after a successful login, that tells the attack defense a request comes from a device which logged in to this account before.",
           "type": "object",
           "properties": {
+            "enabled": {
+              "title": "Enable the known device cookie",
+              "description": "If true, a signed cookie remembering up to three accounts is set after a fully authenticated browser login, and handed to the attack defense as a verdict (none, invalid, known) on later password login attempts.",
+              "type": "boolean",
+              "default": false
+            },
             "secrets": {
               "type": "array",
               "title": "Known device cookie secrets",

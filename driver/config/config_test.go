@@ -491,6 +491,7 @@ func TestKnownDeviceCookieConfig(t *testing.T) {
 	t.Run("case=defaults", func(t *testing.T) {
 		t.Parallel()
 		p := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, configx.SkipValidation())
+		assert.False(t, p.KnownDeviceCookieEnabled(ctx), "off unless enabled")
 		assert.Equal(t, p.SecretsDefault(ctx), p.KnownDeviceCookieSecrets(ctx), "falls back to secrets.default, not secrets.cookie")
 		assert.Equal(t, 90*24*time.Hour, p.KnownDeviceCookieLifespan(ctx))
 		assert.Equal(t, "ory_kratos_known_device", p.KnownDeviceCookieName(ctx))
@@ -500,6 +501,7 @@ func TestKnownDeviceCookieConfig(t *testing.T) {
 		t.Parallel()
 		p := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, configx.SkipValidation(), configx.WithValues(map[string]interface{}{
 			config.ViperKeySecretsCookie:             []string{"session-cookie-secret"},
+			config.ViperKeyKnownDeviceCookieEnabled:  true,
 			config.ViperKeyKnownDeviceCookieSecrets:  []string{"device-secret-new-1", "device-secret-old-1"},
 			config.ViperKeyKnownDeviceCookieLifespan: "4320h",
 			config.ViperKeyKnownDeviceCookieName:     "device",
@@ -507,6 +509,7 @@ func TestKnownDeviceCookieConfig(t *testing.T) {
 		assert.Equal(t, [][]byte{[]byte("device-secret-new-1"), []byte("device-secret-old-1")}, p.KnownDeviceCookieSecrets(ctx))
 		assert.Equal(t, 180*24*time.Hour, p.KnownDeviceCookieLifespan(ctx))
 		assert.Equal(t, "device", p.KnownDeviceCookieName(ctx))
+		assert.True(t, p.KnownDeviceCookieEnabled(ctx))
 	})
 }
 

@@ -164,6 +164,7 @@ const (
 	ViperKeyIdentitySchemas                                  = "identity.schemas"
 	ViperKeyDefenseFingerprintKey                            = "defense.fingerprint_key"
 	ViperKeyDefenseMaxDelay                                  = "defense.max_delay"
+	ViperKeyKnownDeviceCookieEnabled                         = "defense.known_device_cookie.enabled"
 	ViperKeyKnownDeviceCookieSecrets                         = "defense.known_device_cookie.secrets"
 	ViperKeyKnownDeviceCookieLifespan                        = "defense.known_device_cookie.lifespan"
 	ViperKeyKnownDeviceCookieName                            = "defense.known_device_cookie.name"
@@ -591,6 +592,12 @@ func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
 		return []byte(k)
 	}
 	return p.SecretsDefault(ctx)[0]
+}
+
+// KnownDeviceCookieEnabled reports whether KnownDeviceCookies are issued after
+// login and validated before credential checks. It is off by default.
+func (p *Config) KnownDeviceCookieEnabled(ctx context.Context) bool {
+	return p.GetProvider(ctx).Bool(ViperKeyKnownDeviceCookieEnabled)
 }
 
 // KnownDeviceCookieSecrets are the secrets the KnownDeviceCookie is signed

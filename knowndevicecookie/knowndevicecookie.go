@@ -26,6 +26,7 @@
 package knowndevicecookie
 
 import (
+	"context"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -79,7 +80,17 @@ type Config struct {
 	Secure bool
 }
 
+// Provider gives access to the KnownDeviceCookie Codec.
+type Provider interface {
+	// KnownDeviceCookie returns the Codec, or nil if known device cookies are
+	// disabled. A nil *Codec is valid: it issues nothing and verifies to
+	// defense.DeviceNone.
+	KnownDeviceCookie(ctx context.Context) *Codec
+}
+
 // Codec issues and validates KnownDeviceCookies. It is safe for concurrent use.
+// The nil Codec is the disabled one: Issue does nothing and Verify returns
+// defense.DeviceNone.
 type Codec struct {
 	cfg  Config
 	keys [][]byte
@@ -126,6 +137,9 @@ func New(secrets [][]byte, cfg Config) (*Codec, error) {
 // beyond MaxEntries. Carried entries keep their issue time: only the account
 // that just logged in gets a fresh lifespan.
 func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string) error {
+	if c == nil {
+		return nil
+	}
 	id := defense.Canonicalize(identifier)
 	if id == "" || len(id) > MaxIdentifierLength {
 		return errors.New("knowndevicecookie: identifier is empty or too long")
@@ -173,6 +187,9 @@ func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string)
 //   - DeviceKnown: an authentic cookie with a valid, unexpired entry for the
 //     identifier.
 func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
+	if c == nil {
+		return defense.DeviceNone
+	}
 	ck, err := r.Cookie(c.cfg.Name)
 	if err != nil {
 		return defense.DeviceNone

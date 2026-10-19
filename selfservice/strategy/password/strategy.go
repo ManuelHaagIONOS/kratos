@@ -23,6 +23,7 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/selfservice/errorx"
 	"github.com/ory/kratos/selfservice/flow/login"
 	"github.com/ory/kratos/selfservice/flow/registration"
@@ -54,6 +55,7 @@ type dependencies interface {
 	ValidationProvider
 	hash.HashProvider
 	defense.Provider
+	knowndevicecookie.Provider
 
 	registration.HandlerProvider
 	registration.HooksProvider

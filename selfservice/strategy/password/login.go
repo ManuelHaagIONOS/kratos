@@ -85,7 +85,10 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 		Method:           defense.MethodPassword,
 		IdentifierDigest: fp.Identifier(identifier),
 		CredentialDigest: fp.Credential(p.Password),
-		IP:               defense.ParseIP(httpx.ClientIP(r)),
+		// A pure HMAC check of the cookie: no database access, so it is ready
+		// in time for BeforeAttempt. Disabled, it is always DeviceNone.
+		Device: s.d.KnownDeviceCookie(ctx).Verify(r, identifier),
+		IP:     defense.ParseIP(httpx.ClientIP(r)),
 	}
 	dec, err := s.d.Defense().BeforeAttempt(ctx, attempt)
 	if err != nil {

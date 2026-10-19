@@ -123,7 +123,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			require.ErrorIs(t, err, courier.ErrQueueEmpty)
 		})
 
-		t.Run("case=a message that is sent or abandoned loses its body and template data", func(t *testing.T) {
+		t.Run("case=a message that is sent or abandoned loses its subject, body and template data", func(t *testing.T) {
 			type content struct {
 				Status       courier.MessageStatus `db:"status"`
 				Body         string                `db:"body"`
@@ -145,6 +145,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 				var m courier.Message
 				require.NoError(t, faker.FakeData(&m))
 				m.Body, m.TemplateData = "your code is 123456", []byte(`{"code":"123456"}`)
+				m.Subject = "Use code 123456 to log in" // as Kratos' own login_code template has it
 				require.NoError(t, p.AddMessage(ctx, &m))
 				t.Cleanup(func() {
 					require.NoError(t, p.GetConnection(ctx).RawQuery(
@@ -165,7 +166,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 					assert.Equal(t, status, after.Status)
 					assert.Empty(t, after.Body)
 					assert.Empty(t, after.TemplateData)
-					assert.Equal(t, before.Subject, after.Subject, "only the body and the template data are blanked")
+					assert.Empty(t, after.Subject, "the subjects of the code templates hold the code")
 					assert.Equal(t, before.Recipient, after.Recipient)
 				})
 			}

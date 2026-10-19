@@ -86,6 +86,7 @@ type Registry interface {
 	continuity.PersistenceProvider
 
 	cipher.Provider
+	cipher.TOTPProvider
 
 	defense.Provider
 	knowndevicecookie.Provider

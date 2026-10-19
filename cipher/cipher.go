@@ -27,3 +27,8 @@ type Provider interface {
 type SecretsProvider interface {
 	SecretsCipher(ctx context.Context) [][32]byte
 }
+
+// TOTPProvider provides the cipher for TOTP secrets, backed by `secrets.totp`.
+type TOTPProvider interface {
+	TOTPCipher(ctx context.Context) AADCipher
+}

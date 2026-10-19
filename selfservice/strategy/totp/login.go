@@ -140,13 +140,25 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The TOTP credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 
-	key, err := otp.NewKeyFromURL(o.TOTPURL)
+	keyURL, upgraded, err := OpenURL(ctx, s.d, i.ID, o.TOTPURL)
+	if err != nil {
+		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(err, i.ID))
+	}
+
+	key, err := otp.NewKeyFromURL(keyURL)
 	if err != nil {
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(err), i.ID))
 	}
 
 	if !totp.Validate(p.TOTPCode, key.Secret()) {
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(schema.NewTOTPVerifierWrongError("#/")), i.ID))
+	}
+
+	// Migrate on use, and only for a correct code. Best effort: the next login tries again.
+	if upgraded != "" {
+		if err := StoreUpgrade(ctx, s.d.PrivilegedIdentityPool(), i.ID, o.TOTPURL, upgraded); err != nil {
+			s.d.Logger().WithError(err).WithField("identity_id", i.ID).Warn("Unable to re-encrypt the TOTP secret.")
+		}
 	}
 
 	f.Active = s.ID()

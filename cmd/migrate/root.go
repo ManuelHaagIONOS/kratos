@@ -24,6 +24,7 @@ func RegisterCommandRecursive(parent *cobra.Command) {
 	configx.RegisterFlags(c.PersistentFlags())
 	c.AddCommand(NewMigrateSQLCmd())
 	c.AddCommand(NewNormalizePhoneCmd())
+	c.AddCommand(NewTOTPSecretsCmd())
 
 	parent.AddCommand(c)
 }

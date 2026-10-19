@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/pquerna/otp"
 
+	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/continuity"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
@@ -44,6 +45,7 @@ type dependencies interface {
 	otelx.Provider
 
 	config.Provider
+	cipher.TOTPProvider
 
 	continuity.ManagementProvider
 
@@ -93,8 +95,10 @@ func (s *Strategy) CountActiveMultiFactorCredentials(_ context.Context, cc map[i
 				return 0, errors.WithStack(err)
 			}
 
-			_, err := otp.NewKeyFromURL(conf.TOTPURL)
-			if len(conf.TOTPURL) > 0 && err == nil {
+			// An encrypted secret is not decrypted just to count it: it is valid by its shape.
+			if cipher.IsKeyed(conf.TOTPURL) {
+				count++
+			} else if _, err := otp.NewKeyFromURL(conf.TOTPURL); len(conf.TOTPURL) > 0 && err == nil {
 				count++
 			}
 		}

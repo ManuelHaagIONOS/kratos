@@ -124,7 +124,8 @@ type RegistryDefault struct {
 	extraHashers      map[string]NewHasherFn
 	passwordValidator initOnce[password.Validator]
 
-	crypter initOnce[cipher.Cipher]
+	crypter    initOnce[cipher.Cipher]
+	totpCipher initOnce[cipher.AADCipher]
 
 	errorHandler *errorx.Handler
 	errorManager *errorx.Manager
@@ -547,6 +548,33 @@ func (m *RegistryDefault) Cipher(ctx context.Context) cipher.Cipher {
 	})
 }
 
+// TOTPCipher encrypts TOTP secrets with the keys of `secrets.totp`, never with those of `secrets.cipher`.
+func (m *RegistryDefault) TOTPCipher(ctx context.Context) cipher.AADCipher {
+	return m.totpCipher.Get(func() cipher.AADCipher {
+		return cipher.NewKeyedAES(m.Config())
+	})
+}
+
+// checkTOTPSecrets refuses to start with a malformed `secrets.totp`, and warns while TOTP secrets are not (all)
+// protected. It never falls back to `secrets.cipher`.
+func (m *RegistryDefault) checkTOTPSecrets(ctx context.Context) error {
+	if err := m.Config().TOTPKeysProblem(ctx); err != nil {
+		return errors.WithStack(err)
+	}
+
+	if !m.Config().SelfServiceStrategy(ctx, "totp").Enabled {
+		return nil
+	}
+
+	if len(m.Config().KeyedSecrets(ctx)) == 0 {
+		m.Logger().Warn("The TOTP method is enabled but `secrets.totp` is empty: TOTP secrets are not encrypted at rest.")
+	}
+	if m.Config().TOTPAcceptPlaintext(ctx) {
+		m.Logger().Warn("Plaintext TOTP secrets are accepted (`selfservice.methods.totp.config.accept_plaintext_secrets`). Set it to false once all secrets are encrypted, see `kratos migrate totp-secrets`.")
+	}
+	return nil
+}
+
 // WithHashers registers additional password hashers, keyed by the
 // hashers.algorithm value that selects them. See WithExtraHashers.
 func (m *RegistryDefault) WithHashers(hashers map[string]NewHasherFn) {
@@ -782,6 +810,10 @@ func (m *RegistryDefault) Init(ctx context.Context, ctxer contextx.Contextualize
 		return nil
 	}, bc)
 	if err != nil {
+		return err
+	}
+
+	if err := m.checkTOTPSecrets(ctx); err != nil {
 		return err
 	}
 

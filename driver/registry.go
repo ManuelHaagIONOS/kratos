@@ -84,6 +84,7 @@ type Registry interface {
 	continuity.PersistenceProvider
 
 	cipher.Provider
+	cipher.TOTPProvider
 
 	courier.Provider
 

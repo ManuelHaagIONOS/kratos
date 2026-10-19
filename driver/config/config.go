@@ -31,6 +31,7 @@ import (
 	"github.com/ory/herodot"
 	"github.com/ory/jsonschema/v3"
 	"github.com/ory/jsonschema/v3/httploader"
+	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/embedx"
 	"github.com/ory/kratos/request"
 	"github.com/ory/x/configx"
@@ -89,6 +90,7 @@ const (
 	ViperKeySecretsDefault                                   = "secrets.default"
 	ViperKeySecretsCookie                                    = "secrets.cookie"
 	ViperKeySecretsCipher                                    = "secrets.cipher"
+	ViperKeySecretsTOTP                                      = "secrets.totp"
 	ViperKeySecretsPagination                                = "secrets.pagination"
 	ViperKeyPublicBaseURL                                    = "serve.public.base_url"
 	ViperKeyAdminBaseURL                                     = "serve.admin.base_url"
@@ -186,6 +188,7 @@ const (
 	ViperKeyIgnoreNetworkErrors                              = "selfservice.methods.password.config.ignore_network_errors"
 	ViperKeyPasswordRegistrationProfileGroup                 = "selfservice.methods.password.config.password_profile_registration_node_group"
 	ViperKeyTOTPIssuer                                       = "selfservice.methods.totp.config.issuer"
+	ViperKeyTOTPAcceptPlaintext                              = "selfservice.methods.totp.config.accept_plaintext_secrets"
 	ViperKeyOIDCBaseRedirectURL                              = "selfservice.methods.oidc.config.base_redirect_uri"
 	ViperKeySAMLBaseRedirectURL                              = "selfservice.methods.saml.config.base_redirect_uri"
 	ViperKeyWebAuthnRPDisplayName                            = "selfservice.methods.webauthn.config.rp.display_name"
@@ -637,6 +640,11 @@ func (p *Config) TOTPIssuer(ctx context.Context) string {
 	return p.GetProvider(ctx).StringF(ViperKeyTOTPIssuer, p.SelfPublicURL(ctx).Hostname())
 }
 
+// TOTPAcceptPlaintext reports whether TOTP secrets that are not encrypted with secrets.totp are accepted.
+func (p *Config) TOTPAcceptPlaintext(ctx context.Context) bool {
+	return p.GetProvider(ctx).BoolF(ViperKeyTOTPAcceptPlaintext, true)
+}
+
 func (p *Config) OIDCRedirectURIBase(ctx context.Context) *url.URL {
 	return p.GetProvider(ctx).URIF(ViperKeyOIDCBaseRedirectURL, p.SelfPublicURL(ctx))
 }
@@ -929,6 +937,57 @@ func (p *Config) SecretsSession(ctx context.Context) [][]byte {
 func (p *Config) SecretsCipher(ctx context.Context) [][32]byte {
 	secrets := p.GetProvider(ctx).Strings(ViperKeySecretsCipher)
 	return ToCipherSecrets(secrets)
+}
+
+// KeyedSecrets returns the entries of secrets.totp, first the one that encrypts. It never falls back to
+// secrets.cipher or secrets.default: those rotate far sooner than TOTP secrets live. Malformed entries (the schema
+// rejects them) are skipped, so they can neither encrypt nor decrypt; see TOTPKeysProblem.
+func (p *Config) KeyedSecrets(ctx context.Context) []cipher.KeyEntry {
+	var raw []struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := p.GetProvider(ctx).Unmarshal(ViperKeySecretsTOTP, &raw); err != nil {
+		return nil
+	}
+
+	var keys []cipher.KeyEntry
+	for _, r := range raw {
+		if cipher.ValidateKeyID(r.ID) != nil || len(r.Key) != 32 {
+			continue
+		}
+		e := cipher.KeyEntry{ID: r.ID}
+		copy(e.Key[:], r.Key)
+		keys = append(keys, e)
+	}
+	return keys
+}
+
+// TOTPKeysProblem returns why secrets.totp is unusable (malformed or duplicate entries), or nil. Used at startup,
+// so that a typo does not silently leave secrets unprotected or unreadable.
+func (p *Config) TOTPKeysProblem(ctx context.Context) error {
+	var raw []struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := p.GetProvider(ctx).Unmarshal(ViperKeySecretsTOTP, &raw); err != nil {
+		return errors.Wrap(err, "secrets.totp")
+	}
+
+	seen := map[string]struct{}{}
+	for i, r := range raw {
+		if err := cipher.ValidateKeyID(r.ID); err != nil {
+			return errors.Wrapf(err, "secrets.totp[%d]", i)
+		}
+		if len(r.Key) != 32 {
+			return errors.Errorf("secrets.totp[%d]: the key must be 32 bytes long", i)
+		}
+		if _, ok := seen[r.ID]; ok {
+			return errors.Errorf("secrets.totp[%d]: duplicate key id %q", i, r.ID)
+		}
+		seen[r.ID] = struct{}{}
+	}
+	return nil
 }
 
 func ToCipherSecrets(secrets []string) [][32]byte {

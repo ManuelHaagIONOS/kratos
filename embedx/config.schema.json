@@ -1844,6 +1844,11 @@
                       "title": "TOTP Issuer",
                       "description": "The issuer (e.g. a domain name) will be shown in the TOTP app (e.g. Google Authenticator). It helps the user differentiate between different codes.",
                       "type": "string"
+                    },
+                    "accept_plaintext_secrets": {
+                      "title": "Accept plaintext TOTP secrets",
+                      "description": "Defaults to true. Whether to accept TOTP secrets that are not encrypted with secrets.totp (and to store new ones in plaintext while no key is configured). Needed while existing secrets are migrated, which happens on their next use or with `kratos migrate totp-secrets`. Set to false afterwards. Kratos warns at startup while it is true.",
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
@@ -2818,6 +2823,31 @@
             "maxLength": 32
           },
           "minItems": 1
+        },
+        "totp": {
+          "type": "array",
+          "title": "Keys to encrypt TOTP secrets at rest",
+          "description": "Unlike secrets.cipher, these are meant to live long: TOTP secrets stay in the database for as long as the user keeps the device. Each entry names its key, and the name is stored with the ciphertext. The first entry encrypts new secrets, all entries decrypt. A secret under another entry is re-encrypted with the first one on its next use (or by `kratos migrate totp-secrets`), so only drop an entry once that has happened. If the list is empty, TOTP secrets are stored in plaintext, which requires selfservice.methods.totp.config.accept_plaintext_secrets.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "Key ID",
+                "description": "Alphanumeric name of the key, unique in the list, and not `otpauth` (checked at startup).",
+                "pattern": "^[A-Za-z0-9]+$"
+              },
+              "key": {
+                "type": "string",
+                "title": "Key",
+                "description": "The 32 byte AES-256 key.",
+                "minLength": 32,
+                "maxLength": 32
+              }
+            },
+            "required": ["id", "key"],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

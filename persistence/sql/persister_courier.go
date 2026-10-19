@@ -148,12 +148,17 @@ func (p *Persister) SetMessageStatus(ctx context.Context, id uuid.UUID, ms couri
 	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.SetMessageStatus")
 	defer otelx.End(span, &err)
 
-	count, err := p.GetConnection(ctx).RawQuery(
-		"UPDATE courier_messages SET status = ? WHERE id = ? AND nid = ?",
-		ms,
-		id,
-		p.NetworkID(ctx),
-	).ExecWithCount()
+	// A message that is done, delivered or given up on, has no use for its
+	// content, which holds what the recipient was sent: recovery and
+	// verification codes and links, login codes. Blank it, so that a copy of
+	// the database or a read of the table does not hold them. body is NOT NULL
+	// on some databases, so it becomes empty, and template_data is NULL.
+	query := "UPDATE courier_messages SET status = ? WHERE id = ? AND nid = ?"
+	if ms == courier.MessageStatusSent || ms == courier.MessageStatusAbandoned {
+		query = "UPDATE courier_messages SET status = ?, body = '', template_data = NULL WHERE id = ? AND nid = ?"
+	}
+
+	count, err := p.GetConnection(ctx).RawQuery(query, ms, id, p.NetworkID(ctx)).ExecWithCount()
 	if err != nil {
 		return sqlcon.HandleError(err)
 	}

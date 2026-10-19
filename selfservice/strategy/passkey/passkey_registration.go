@@ -7,6 +7,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 	"strings"
@@ -93,6 +94,10 @@ func (s *Strategy) decode(r *http.Request, ds *url.URL) (*updateRegistrationFlow
 	return &p, err
 }
 
+var _ registration.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) RegistrationDefended() {}
+
 func (s *Strategy) Register(w http.ResponseWriter, r *http.Request, regFlow *registration.Flow, ident *identity.Identity) (err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.passkey.Strategy.Register")
 	defer otelx.End(span, &err)
@@ -128,6 +133,13 @@ func (s *Strategy) Register(w http.ResponseWriter, r *http.Request, regFlow *reg
 		params.Traits = json.RawMessage("{}")
 	}
 	ident.Traits = identity.Traits(params.Traits)
+
+	// Defense: Check via the gate, before any hashing, lookup or sending. Only a strategy can call it, as only it knows it
+	// is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the registration handler reports them.
+	// Verifying the attestation is public key computation, and the traits are not validated yet, so only the client's address is known.
+	if err := gate.From(ctx).Check(ctx, "", ""); err != nil {
+		return s.handleRegistrationError(w, r, regFlow, params, err)
+	}
 
 	webAuthnSession := gjson.GetBytes(regFlow.InternalContext, flow.PrefixInternalContextKey(s.ID(), InternalContextKeySessionData))
 	if !webAuthnSession.IsObject() {

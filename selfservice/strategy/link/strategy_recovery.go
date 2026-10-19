@@ -4,8 +4,10 @@
 package link
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 	"time"
@@ -250,6 +252,10 @@ type _ struct {
 	TransientPayload json.RawMessage `json:"transient_payload,omitempty" form:"transient_payload"`
 }
 
+var _ recovery.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) RecoveryDefended() {}
+
 func (s *Strategy) Recover(w http.ResponseWriter, r *http.Request, f *recovery.Flow) (err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.link.Strategy.Recover")
 	span.SetAttributes(attribute.String("selfservice_flows_recovery_use", s.d.Config().SelfServiceFlowRecoveryUse(ctx)))
@@ -261,6 +267,13 @@ func (s *Strategy) Recover(w http.ResponseWriter, r *http.Request, f *recovery.F
 	}
 
 	f.TransientPayload = body.TransientPayload
+
+	// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+	// responsible and has its payload. The outcome of a token is reported in recoveryUseToken: a wrong token is a message.
+	// The address is typed on the step that sends; the step that uses a token names none, so the flow stands in for it.
+	if err := gate.From(ctx).Check(ctx, cmp.Or(body.Email, f.ID.String()), body.Token); err != nil {
+		return s.HandleRecoveryError(r, nil, body, err)
+	}
 
 	if len(body.Token) > 0 {
 		if err := flow.MethodEnabledAndAllowed(r.Context(), f.GetFlowName(), s.RecoveryStrategyID(), s.RecoveryStrategyID(), s.d); err != nil {
@@ -364,11 +377,13 @@ func (s *Strategy) recoveryUseToken(ctx context.Context, w http.ResponseWriter, 
 	token, err := s.d.RecoveryTokenPersister().UseRecoveryToken(r.Context(), fID, body.Token)
 	if err != nil {
 		if errors.Is(err, sqlcon.ErrNoRows()) {
+			gate.From(ctx).Failed(ctx)
 			return s.retryRecoveryFlowWithMessage(w, r, flow.TypeBrowser, text.NewErrorValidationRecoveryTokenInvalidOrAlreadyUsed())
 		}
 
 		return s.retryRecoveryFlowWithError(w, r, flow.TypeBrowser, err)
 	}
+	gate.From(ctx).Succeeded(ctx)
 
 	var f *recovery.Flow
 	if !token.FlowID.Valid {

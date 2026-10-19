@@ -6,6 +6,7 @@ package code
 import (
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"time"
 
@@ -141,6 +142,10 @@ func (body *updateVerificationFlowWithCodeMethod) getMethod() verification.Verif
 	return ""
 }
 
+var _ verification.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) VerificationDefended() {}
+
 func (s *Strategy) Verify(w http.ResponseWriter, r *http.Request, f *verification.Flow) (err error) {
 	ctx, span := s.deps.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.code.Strategy.Verify")
 	span.SetAttributes(attribute.String("selfservice_flows_verification_use", s.deps.Config().SelfServiceFlowVerificationUse(ctx)))
@@ -204,6 +209,14 @@ func (s *Strategy) verificationHandleFormSubmission(ctx context.Context, w http.
 			return s.handleLinkClick(ctx, w, r, f, body.Code)
 		}
 
+		// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+		// responsible and has its payload.
+		// Opening the link (GET) guesses nothing, so it is not an attempt. The code names no address: the flow stands in for it.
+		// The outcome is reported in verificationUseCode: a wrong code is a message.
+		if err := gate.From(ctx).Check(ctx, f.ID.String(), body.Code); err != nil {
+			return s.handleVerificationError(r, f, body, err)
+		}
+
 		// If not GET: try to use the submitted code
 		return s.verificationUseCode(ctx, w, r, body.Code, f)
 	} else if len(body.Email) == 0 {
@@ -212,6 +225,13 @@ func (s *Strategy) verificationHandleFormSubmission(ctx context.Context, w http.
 	}
 
 	if err := flow.EnsureCSRF(s.deps, r, f.Type, s.deps.Config().DisableAPIFlowEnforcement(ctx), s.deps.GenerateCSRFToken, body.CSRFToken); err != nil {
+		return s.handleVerificationError(r, f, body, err)
+	}
+
+	// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+	// responsible and has its payload.
+	// This step sends a code to the address, so it is defended like a route that sends messages.
+	if err := gate.From(ctx).Check(ctx, body.Email, ""); err != nil {
 		return s.handleVerificationError(r, f, body, err)
 	}
 
@@ -298,6 +318,7 @@ func (s *Strategy) updateVerificationFlowWithMessage(ctx context.Context, w http
 func (s *Strategy) verificationUseCode(ctx context.Context, w http.ResponseWriter, r *http.Request, codeString string, f *verification.Flow) error {
 	code, err := s.deps.VerificationCodePersister().UseVerificationCode(ctx, f.ID, codeString)
 	if errors.Is(err, ErrCodeNotFound()) {
+		gate.From(ctx).Failed(ctx)
 		if err := s.updateVerificationFlowWithMessage(ctx, w, r, f, text.NewErrorValidationVerificationCodeInvalidOrAlreadyUsed(), http.StatusOK); err != nil {
 			return s.retryVerificationFlowWithError(ctx, w, r, f.Type, err)
 		}
@@ -305,6 +326,7 @@ func (s *Strategy) verificationUseCode(ctx context.Context, w http.ResponseWrite
 	} else if err != nil {
 		return s.retryVerificationFlowWithError(ctx, w, r, f.Type, err)
 	}
+	gate.From(ctx).Succeeded(ctx)
 
 	var identityID uuid.UUID
 	var addressVia string

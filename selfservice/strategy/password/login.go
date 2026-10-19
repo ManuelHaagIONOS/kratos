@@ -8,7 +8,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -98,6 +100,9 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 	if dec.Verdict == defense.Deny {
 		s.d.Logger().WithField("reason", dec.Reason).Info("Login attempt denied by defense.")
+		if dec.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(dec.RetryAfter.Seconds())), 10))
+		}
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(&herodot.DefaultError{
 			StatusField: http.StatusText(http.StatusTooManyRequests),
 			ErrorField:  "Too Many Requests",
@@ -118,6 +123,7 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))
 	if err := d.Decode(&o); err != nil {
+		s.d.Defense().AfterFailure(ctx, attempt)
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The password credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 

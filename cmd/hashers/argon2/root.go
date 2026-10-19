@@ -31,11 +31,12 @@ const (
 	FlagExpectedDeviation = "expected-deviation"
 )
 
-var rootCmd = &cobra.Command{
-	Use: "argon2",
-}
-
 func RegisterCommandRecursive(parent *cobra.Command) {
+	// Not a package level command: it would be shared by every root built in a
+	// process (see TestNewRootCmdsAreIndependent in package cmd).
+	rootCmd := &cobra.Command{
+		Use: "argon2",
+	}
 	parent.AddCommand(rootCmd)
 
 	rootCmd.AddCommand(newCalibrateCmd(), newHashCmd(), newLoadTestCmd())

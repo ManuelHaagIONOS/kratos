@@ -21,6 +21,15 @@ const (
 	RecoveryStrategyCode RecoveryMethod = "code"
 )
 
+// DefendedStrategy marks a recovery strategy that enters the defense gate: it calls
+// gate.From(ctx).Check where it is responsible and has its payload, before any
+// lookup or sending, and reports outcomes the handler cannot see with
+// gate.From(ctx).Succeeded or Failed. A strategy that does not implement it must
+// be listed as exempt, with a reason, in the coverage test of the driver package.
+type DefendedStrategy interface {
+	RecoveryDefended()
+}
+
 type (
 	Strategy interface {
 		RecoveryStrategyID() string

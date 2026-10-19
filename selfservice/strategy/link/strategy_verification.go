@@ -6,6 +6,7 @@ package link
 import (
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 	"time"
@@ -124,6 +125,10 @@ type updateVerificationFlowWithLinkMethod struct {
 	TransientPayload json.RawMessage `json:"transient_payload,omitempty" form:"transient_payload"`
 }
 
+var _ verification.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) VerificationDefended() {}
+
 func (s *Strategy) Verify(w http.ResponseWriter, r *http.Request, f *verification.Flow) (err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.link.Strategy.Verify")
 	span.SetAttributes(attribute.String("selfservice_flows_verification_use", s.d.Config().SelfServiceFlowVerificationUse(ctx)))
@@ -137,6 +142,13 @@ func (s *Strategy) Verify(w http.ResponseWriter, r *http.Request, f *verificatio
 
 	if len(body.Token) > 0 {
 		if err := flow.MethodEnabledAndAllowed(ctx, f.GetFlowName(), s.VerificationStrategyID(), s.VerificationStrategyID(), s.d); err != nil {
+			return s.handleVerificationError(r, nil, body, err)
+		}
+
+		// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+		// responsible and has its payload.
+		// The token names no address: the flow stands in for it. The outcome is reported in verificationUseToken.
+		if err := gate.From(ctx).Check(ctx, f.ID.String(), body.Token); err != nil {
 			return s.handleVerificationError(r, nil, body, err)
 		}
 
@@ -175,6 +187,13 @@ func (s *Strategy) verificationHandleFormSubmission(ctx context.Context, r *http
 		return s.handleVerificationError(r, f, body, err)
 	}
 
+	// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+	// responsible and has its payload.
+	// This step sends a link to the address, so it is defended like a route that sends messages.
+	if err := gate.From(ctx).Check(ctx, body.Email, ""); err != nil {
+		return s.handleVerificationError(r, f, body, err)
+	}
+
 	if err := s.d.LinkSender().SendVerificationLink(ctx, f, identity.AddressTypeEmail, body.Email); err != nil {
 		if !errors.Is(err, ErrUnknownAddress) {
 			return s.handleVerificationError(r, f, body, err)
@@ -202,11 +221,13 @@ func (s *Strategy) verificationUseToken(ctx context.Context, w http.ResponseWrit
 	token, err := s.d.VerificationTokenPersister().UseVerificationToken(ctx, f.ID, body.Token)
 	if err != nil {
 		if errors.Is(err, sqlcon.ErrNoRows()) {
+			gate.From(ctx).Failed(ctx)
 			return s.retryVerificationFlowWithMessage(ctx, w, r, flow.TypeBrowser, text.NewErrorValidationVerificationTokenInvalidOrAlreadyUsed())
 		}
 
 		return s.retryVerificationFlowWithError(ctx, w, r, flow.TypeBrowser, err)
 	}
+	gate.From(ctx).Succeeded(ctx)
 
 	if err := token.Valid(s.d.Clock()); err != nil {
 		return s.retryVerificationFlowWithError(ctx, w, r, flow.TypeBrowser, err)

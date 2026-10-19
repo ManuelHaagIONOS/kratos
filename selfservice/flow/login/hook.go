@@ -19,6 +19,7 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hydra"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
 	"github.com/ory/kratos/selfservice/sessiontokenexchange"
@@ -59,6 +60,7 @@ type (
 		httpx.WriterProvider
 		logrusx.Provider
 		otelx.Provider
+		knowndevicecookie.Provider
 		sessiontokenexchange.PersistenceProvider
 		HandlerProvider
 
@@ -312,6 +314,8 @@ func (e *HookExecutor) PostLoginHook(
 			return err
 		}
 
+		e.issueKnownDeviceCookie(w, r, f, i)
+
 		// If Kratos is used as a Hydra login provider, we need to redirect back to Hydra by returning a 422 status
 		// with the post login challenge URL as the body.
 		if f.OAuth2LoginChallenge != "" {
@@ -367,6 +371,8 @@ func (e *HookExecutor) PostLoginHook(
 		return errors.WithStack(err)
 	}
 
+	e.issueKnownDeviceCookie(w, r, f, i)
+
 	finalReturnTo := returnTo.String()
 	if f.OAuth2LoginChallenge != "" {
 		rt, err := e.d.Hydra().AcceptLoginRequest(ctx,
@@ -388,6 +394,31 @@ func (e *HookExecutor) PostLoginHook(
 
 	redir.ContentNegotiationRedirection(w, r, s, e.d.Writer(), finalReturnTo)
 	return nil
+}
+
+// issueKnownDeviceCookie remembers the device for the account, so the attack
+// defense can tell later password attempts from it from those of strangers.
+//
+// It runs only once the login is complete, after the AAL check: a login that
+// still has to pass a second factor has not proven the device belongs to the
+// account. It is not a configurable post-login hook, as those are per
+// credentials type and know nothing of the AAL. It is limited to browser flows,
+// as other clients have no cookie jar, and it never fails the login.
+func (e *HookExecutor) issueKnownDeviceCookie(w http.ResponseWriter, r *http.Request, f *Flow, i *identity.Identity) {
+	ctx := r.Context()
+	codec := e.d.KnownDeviceCookie(ctx)
+	if codec == nil || f.Type != flow.TypeBrowser {
+		return
+	}
+	// The cookie is checked against the identifier typed into the password
+	// form, which is what the password credential stores, canonicalized.
+	creds, ok := i.GetCredentials(identity.CredentialsTypePassword)
+	if !ok || len(creds.Identifiers) == 0 {
+		return
+	}
+	if err := codec.Issue(w, r, creds.Identifiers[0]); err != nil {
+		e.d.Logger().WithRequest(r).WithError(err).WithField("identity_id", i.ID).Warn("Unable to issue the known device cookie.")
+	}
 }
 
 func (e *HookExecutor) PreLoginHook(w http.ResponseWriter, r *http.Request, a *Flow) error {

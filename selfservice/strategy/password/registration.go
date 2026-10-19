@@ -6,6 +6,7 @@ package password
 import (
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 
@@ -86,6 +87,10 @@ func (s *Strategy) decode(p *UpdateRegistrationFlowWithPasswordMethod, r *http.R
 	return registration.DecodeBody(p, r, registrationSchema, ds)
 }
 
+var _ registration.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) RegistrationDefended() {}
+
 func (s *Strategy) Register(_ http.ResponseWriter, r *http.Request, f *registration.Flow, i *identity.Identity) (err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.password.Strategy.Register")
 	defer otelx.End(span, &err)
@@ -116,6 +121,14 @@ func (s *Strategy) Register(_ http.ResponseWriter, r *http.Request, f *registrat
 
 	if len(p.Traits) == 0 {
 		p.Traits = json.RawMessage("{}")
+	}
+
+	// Defense: Check via the gate, before any hashing, lookup or sending. Only a strategy can call it, as only it knows it
+	// is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the registration handler reports them.
+	// The identifier is only known from the traits once they are validated, which happens after the hashing starts,
+	// so the attempt is counted by the client's address and the password: one password tried for many new accounts shows.
+	if err := gate.From(ctx).Check(ctx, "", p.Password); err != nil {
+		return s.handleRegistrationError(r, f, p, err)
 	}
 
 	hpw := make(chan []byte)

@@ -141,7 +141,8 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(schema.NewTOTPVerifierWrongError("#/")), i.ID))
 	}
 
-	// Migrate on use, and only for a correct code. Best effort: the next login tries again.
+	// Migrate on use, and only for a correct code: a wrong guess proves nothing, and must not make us write to the
+	// database (an attacker could otherwise force a write per attempt). Best effort: the next login tries again.
 	if upgraded != "" {
 		if err := StoreUpgrade(ctx, s.d.PrivilegedIdentityPool(), i.ID, o.TOTPURL, upgraded); err != nil {
 			s.d.Logger().WithError(err).WithField("identity_id", i.ID).Warn("Unable to re-encrypt the TOTP secret.")

@@ -57,6 +57,9 @@ var httpMetrics = prometheusx.NewHTTPMetrics("kratos", prometheusx.HTTPPrefix, c
 func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Command) (func() error, error) {
 	cfg := r.Config().ServePublic(ctx)
 	l := r.Logger()
+	if _, err := r.Config().DefenseTrustedProxies(ctx); err != nil {
+		return nil, err
+	}
 
 	rec := negroni.NewRecovery()
 	rec.Logger = l
@@ -158,6 +161,9 @@ func servePublic(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Comm
 func serveAdmin(ctx context.Context, r *driver.RegistryDefault, cmd *cobra.Command) (func() error, error) {
 	cfg := r.Config().ServeAdmin(ctx)
 	l := r.Logger()
+	if _, err := r.Config().DefenseTrustedProxies(ctx); err != nil {
+		return nil, err
+	}
 
 	rec := negroni.NewRecovery()
 	rec.Logger = l

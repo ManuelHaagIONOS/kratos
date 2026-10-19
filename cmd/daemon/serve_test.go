@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ory/x/configx"
+	"github.com/ory/x/httpx"
 
 	"github.com/ory/kratos/pkg"
 )
@@ -73,4 +75,38 @@ func TestMetricsRouterPaths(t *testing.T) {
 		assert.Contains(t, body, `endpoint="/sessions/{param}"`)
 		assert.Contains(t, body, `endpoint="/admin/identities/{param}/sessions"`)
 	}, 5*time.Second, 100*time.Millisecond)
+}
+
+func TestClientInfoMiddleware(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		values  map[string]any
+		peer    string
+		spoofed string
+		want    string
+	}{
+		{name: "unset ignores the header", peer: "198.51.100.7:1", spoofed: "1.2.3.4", want: "198.51.100.7"},
+		{name: "untrusted peer", peer: "198.51.100.7:1", spoofed: "1.2.3.4", want: "198.51.100.7",
+			values: map[string]any{"defense.client_ip.header": "True-Client-IP", "defense.client_ip.trusted_proxies": []string{"10.0.0.0/8"}}},
+		{name: "trusted peer", peer: "10.1.2.3:1", spoofed: "1.2.3.4", want: "1.2.3.4",
+			values: map[string]any{"defense.client_ip.header": "True-Client-IP", "defense.client_ip.trusted_proxies": []string{"10.0.0.0/8"}}},
+		{name: "invalid setting trusts nobody", peer: "10.1.2.3:1", spoofed: "1.2.3.4", want: "10.1.2.3",
+			values: map[string]any{"defense.client_ip.header": "True-Client-IP", "defense.client_ip.trusted_proxies": []string{"10.0.0.0/8", "nope"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, reg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(tc.values))
+
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = tc.peer
+			r.Header.Set("True-Client-IP", tc.spoofed)
+			var got string
+			clientInfoMiddleware(reg)(httptest.NewRecorder(), r, func(_ http.ResponseWriter, r *http.Request) {
+				got = httpx.ClientIP(r)
+			})
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

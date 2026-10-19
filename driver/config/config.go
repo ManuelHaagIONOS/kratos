@@ -587,7 +587,7 @@ func (p *Config) DefenseMaxDelay(ctx context.Context) time.Duration {
 }
 
 // DefenseTrustedProxies says whose forwarding header gives the client's address.
-// Unset, no header is believed. An invalid CIDR is an error (see the schema).
+// Unset, no header is believed. An invalid CIDR is an error; the servers refuse to start with one.
 func (p *Config) DefenseTrustedProxies(ctx context.Context) (httpx.TrustedProxies, error) {
 	pr := p.GetProvider(ctx)
 	return httpx.ParseTrustedProxies(pr.String(ViperKeyDefenseClientIPHeader), pr.Strings(ViperKeyDefenseClientIPTrustedProxies))

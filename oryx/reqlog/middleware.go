@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/negroni"
 
+	"github.com/ory/x/httpx"
 	"github.com/ory/x/logrusx"
 )
 
@@ -132,11 +133,9 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, r *http.Request, next htt
 
 	start := m.clock.Now()
 
-	// Try to get the real IP
-	remoteAddr := r.RemoteAddr
-	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-		remoteAddr = realIP
-	}
+	// Any client can send X-Real-IP: the address is the TCP peer, unless the request's
+	// context says it comes from a trusted proxy (see httpx.ContextWithClientInfo).
+	remoteAddr := httpx.ClientIP(r)
 
 	entry := m.Logger.NewEntry()
 

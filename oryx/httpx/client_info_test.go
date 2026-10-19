@@ -6,6 +6,7 @@ package httpx
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -115,4 +116,24 @@ func TestParseTrustedProxiesInvalid(t *testing.T) {
 	t.Parallel()
 	_, err := ParseTrustedProxies("True-Client-IP", []string{"10.0.0.0/8", "nope"})
 	require.Error(t, err)
+}
+
+func TestParseTrustedProxiesMapped(t *testing.T) {
+	t.Parallel()
+	tp, err := ParseTrustedProxies("True-Client-IP", []string{"::ffff:10.0.0.0/104"})
+	require.NoError(t, err)
+	assert.True(t, tp.trusts(netip.MustParseAddr("10.1.2.3")))
+	assert.False(t, tp.trusts(netip.MustParseAddr("11.1.2.3")))
+
+	_, err = ParseTrustedProxies("True-Client-IP", []string{"::ffff:0:0/80"})
+	require.Error(t, err)
+}
+
+func TestClientIPUnparseablePeerIsPassedOn(t *testing.T) {
+	t.Parallel()
+	for _, peer := range []string{"@", ""} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = peer
+		assert.Equal(t, peer, ClientIP(r))
+	}
 }

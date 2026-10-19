@@ -6,7 +6,6 @@ package tlsx
 import (
 	"net"
 	"net/http"
-	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/urfave/negroni"
@@ -72,24 +71,19 @@ func EnforceTLSRequests(d dependencies, allowTerminationFrom []string) (negroni.
 	}), nil
 }
 
+// matchesRange checks the TCP peer only: X-Forwarded-For is set by the client, so
+// believing any of its entries would let anyone claim to be a terminating proxy.
 func matchesRange(r *http.Request, networks []*net.IPNet) error {
 	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	check := []string{remoteIP}
-	for fwd := range strings.SplitSeq(r.Header.Get("X-Forwarded-For"), ",") {
-		check = append(check, strings.TrimSpace(fwd))
-	}
-
+	addr := net.ParseIP(remoteIP)
 	for _, ipNet := range networks {
-		for _, ip := range check {
-			addr := net.ParseIP(ip)
-			if ipNet.Contains(addr) {
-				return nil
-			}
+		if ipNet.Contains(addr) {
+			return nil
 		}
 	}
-	return errors.Errorf("neither remote address nor any x-forwarded-for values match CIDR ranges %+v: %v, ranges, check)", networks, check)
+	return errors.Errorf("remote address %s does not match CIDR ranges %+v", remoteIP, networks)
 }

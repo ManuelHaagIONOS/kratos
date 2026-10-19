@@ -57,16 +57,27 @@ func ParseTrustedProxies(header string, cidrs []string) (TrustedProxies, error) 
 			}
 			p = netip.PrefixFrom(a, a.BitLen())
 		}
-		t.CIDRs = append(t.CIDRs, netip.PrefixFrom(p.Addr().Unmap(), unmappedBits(p)).Masked())
+		u, err := unmapPrefix(p)
+		if err != nil {
+			return TrustedProxies{}, fmt.Errorf("invalid trusted proxy %q: %w", c, err)
+		}
+		t.CIDRs = append(t.CIDRs, u)
 	}
 	return t, nil
 }
 
-func unmappedBits(p netip.Prefix) int {
-	if p.Addr().Is4In6() && p.Bits() >= 96 {
-		return p.Bits() - 96
+// unmapPrefix turns an IPv4-mapped prefix (::ffff:10.0.0.0/104) into the IPv4 one,
+// as addresses are unmapped before they are compared. A mapped prefix shorter than
+// /96 spans more than the IPv4 space and cannot be expressed: an error, as it would
+// otherwise silently trust nobody.
+func unmapPrefix(p netip.Prefix) (netip.Prefix, error) {
+	if !p.Addr().Is4In6() {
+		return p.Masked(), nil
 	}
-	return p.Bits()
+	if p.Bits() < 96 {
+		return netip.Prefix{}, fmt.Errorf("an IPv4-mapped prefix needs at least 96 bits, got %d", p.Bits())
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96).Masked(), nil
 }
 
 func (t TrustedProxies) trusts(a netip.Addr) bool {
@@ -102,8 +113,12 @@ func (t TrustedProxies) peer(r *http.Request) (netip.Addr, bool) {
 // it is the right-most entry that is not itself a trusted proxy.
 func (t TrustedProxies) ClientIP(r *http.Request) string {
 	peer, trusted := t.peer(r)
+	peerStr := r.RemoteAddr // what we cannot parse is passed on as it is
+	if peer.IsValid() {
+		peerStr = peer.String()
+	}
 	if !trusted || t.Header == "" {
-		return peer.String()
+		return peerStr
 	}
 	vals := r.Header.Values(t.Header)
 	if http.CanonicalHeaderKey(t.Header) != "X-Forwarded-For" {
@@ -112,7 +127,7 @@ func (t TrustedProxies) ClientIP(r *http.Request) string {
 				return a.String()
 			}
 		}
-		return peer.String()
+		return peerStr
 	}
 	var entries []string
 	for _, v := range vals {
@@ -128,7 +143,7 @@ func (t TrustedProxies) ClientIP(r *http.Request) string {
 			return a.String()
 		}
 	}
-	return peer.String()
+	return peerStr
 }
 
 // GeoLocation reads the Cf-* geo headers, but only from a trusted proxy.

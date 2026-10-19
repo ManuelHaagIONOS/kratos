@@ -2916,6 +2916,38 @@
           "type": "string",
           "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
           "default": "10s"
+        },
+        "known_device_cookie": {
+          "title": "Known device cookie",
+          "description": "A long-lived signed cookie, set after a successful login, that tells the attack defense a request comes from a device which logged in to this account before.",
+          "type": "object",
+          "properties": {
+            "secrets": {
+              "type": "array",
+              "title": "Known device cookie secrets",
+              "description": "The first secret signs the cookie, all of them verify it. Defaults to secrets.default. Unlike session cookies this cookie lives for months, so keep an old secret listed for the full lifespan plus the rotation window; dropping it only makes users lose the bypass until their next login.",
+              "items": {
+                "type": "string",
+                "minLength": 16
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "lifespan": {
+              "title": "Known device cookie lifespan",
+              "description": "How long the cookie is valid, counted from the last successful login.",
+              "type": "string",
+              "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
+              "default": "2160h"
+            },
+            "name": {
+              "title": "Known device cookie name",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "default": "ory_kratos_known_device"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

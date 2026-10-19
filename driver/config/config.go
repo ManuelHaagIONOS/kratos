@@ -32,6 +32,7 @@ import (
 	"github.com/ory/jsonschema/v3"
 	"github.com/ory/jsonschema/v3/httploader"
 	"github.com/ory/kratos/embedx"
+	"github.com/ory/kratos/knowndevicecookie"
 	"github.com/ory/kratos/request"
 	"github.com/ory/x/configx"
 	"github.com/ory/x/contextx"
@@ -163,6 +164,9 @@ const (
 	ViperKeyIdentitySchemas                                  = "identity.schemas"
 	ViperKeyDefenseFingerprintKey                            = "defense.fingerprint_key"
 	ViperKeyDefenseMaxDelay                                  = "defense.max_delay"
+	ViperKeyKnownDeviceCookieSecrets                         = "defense.known_device_cookie.secrets"
+	ViperKeyKnownDeviceCookieLifespan                        = "defense.known_device_cookie.lifespan"
+	ViperKeyKnownDeviceCookieName                            = "defense.known_device_cookie.name"
 	ViperKeyHasherAlgorithm                                  = "hashers.algorithm"
 	ViperKeyHasherArgon2ConfigMemory                         = "hashers.argon2.memory"
 	ViperKeyHasherArgon2ConfigIterations                     = "hashers.argon2.iterations"
@@ -587,6 +591,33 @@ func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
 		return []byte(k)
 	}
 	return p.SecretsDefault(ctx)[0]
+}
+
+// KnownDeviceCookieSecrets are the secrets the KnownDeviceCookie is signed
+// with: the first signs, all verify. They fall back to secrets.default rather
+// than secrets.cookie, as the cookie outlives session cookies by months and
+// its secrets must stay listed that long.
+func (p *Config) KnownDeviceCookieSecrets(ctx context.Context) [][]byte {
+	secrets := p.GetProvider(ctx).Strings(ViperKeyKnownDeviceCookieSecrets)
+	if len(secrets) == 0 {
+		return p.SecretsDefault(ctx)
+	}
+	result := make([][]byte, len(secrets))
+	for k, v := range secrets {
+		result[k] = []byte(v)
+	}
+	return result
+}
+
+// KnownDeviceCookieLifespan is how long a KnownDeviceCookie is valid, counted
+// from the last successful login.
+func (p *Config) KnownDeviceCookieLifespan(ctx context.Context) time.Duration {
+	return p.GetProvider(ctx).DurationF(ViperKeyKnownDeviceCookieLifespan, knowndevicecookie.DefaultLifespan)
+}
+
+// KnownDeviceCookieName is the name of the KnownDeviceCookie.
+func (p *Config) KnownDeviceCookieName(ctx context.Context) string {
+	return cmp.Or(p.GetProvider(ctx).String(ViperKeyKnownDeviceCookieName), knowndevicecookie.DefaultName)
 }
 
 func (p *Config) HasherArgon2(ctx context.Context) *Argon2 {

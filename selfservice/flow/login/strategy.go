@@ -5,6 +5,7 @@ package login
 
 import (
 	"context"
+	"github.com/ory/kratos/defense"
 	"net/http"
 
 	"github.com/pkg/errors"
@@ -21,6 +22,15 @@ type Strategy interface {
 	NodeGroup() node.UiNodeGroup
 	Login(w http.ResponseWriter, r *http.Request, f *Flow, sess *session.Session) (i *identity.Identity, err error)
 	CompletedAuthenticationMethod(ctx context.Context) session.AuthenticationMethod
+}
+
+// DefendedStrategy is a login strategy whose attempts go through the defense
+// gate: it calls gate.From(ctx).Check once it is responsible and has decoded
+// its payload, and the handler reports the outcome. A login strategy that does
+// not implement it must be listed as exempt, with a reason, in the coverage test
+// of the driver package.
+type DefendedStrategy interface {
+	DefenseMethod() defense.MethodID
 }
 
 type Strategies []Strategy

@@ -16,6 +16,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
@@ -173,6 +175,10 @@ func (s *Strategy) methodEnabledAndAllowedFromRequest(r *http.Request, f *login.
 	return &method, nil
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodCode }
+
 func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, sess *session.Session) (_ *identity.Identity, err error) {
 	ctx, span := s.deps.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.code.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -237,6 +243,12 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 		identifier := maybeNormalizeEmail(
 			cmp.Or(p.Identifier, p.Address),
 		)
+		// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+		// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+		// This step sends a code to the address, so it is defended like a route that sends messages.
+		if err := gate.From(ctx).Check(ctx, defenseIdentifier(f, sess, identifier), ""); err != nil {
+			return nil, s.HandleLoginError(r, f, &p, err, false)
+		}
 		id, addresses, err := s.findIdentityForIdentifier(ctx, identifier, f.RequestedAAL, sess)
 		if err != nil {
 			return nil, s.HandleLoginError(r, f, &p, err, false)
@@ -371,11 +383,28 @@ func (s *Strategy) FastLogin2FA(w http.ResponseWriter, r *http.Request, f *login
 		}
 	}
 
+	// FastLogin1FA runs inside the identifier-first step, which is defended; this one runs when the flow is created,
+	// outside any login handler loop, so the handler gives it its own gate (see login.Handler.NewLoginFlow).
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Nothing is reported afterwards: no credential is checked.
+	if err := gate.From(ctx).Check(ctx, sess.IdentityID.String(), ""); err != nil {
+		return err
+	}
+
 	if err := s.loginSendCode(ctx, w, r, f, id, identifier, addresses, true); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// defenseIdentifier is the account an attempt is counted against: the one of the session for a second factor,
+// which follows a verified first one, else the identifier the client typed.
+func defenseIdentifier(f *login.Flow, sess *session.Session, typed string) string {
+	if f.RequestedAAL == identity.AuthenticatorAssuranceLevel2 {
+		return sess.IdentityID.String()
+	}
+	return typed
 }
 
 func (s *Strategy) findIdentifierInVerifiableAddress(i *identity.Identity, identifier string) (*Address, error) {
@@ -595,6 +624,13 @@ func (s *Strategy) loginVerifyCode(ctx context.Context, f *login.Flow, p *update
 			p.Identifier, // Older versions of Kratos required us to send the identifier here.
 		),
 	)
+
+	// A code is guessable: this is the step to defend most.
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	if err := gate.From(ctx).Check(ctx, defenseIdentifier(f, sess, p.Identifier), p.Code); err != nil {
+		return nil, err
+	}
 
 	var i *identity.Identity
 	if f.RequestedAAL == identity.AuthenticatorAssuranceLevel2 {

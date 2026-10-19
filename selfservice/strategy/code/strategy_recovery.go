@@ -4,10 +4,12 @@
 package code
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 	"net/url"
 	"slices"
@@ -159,6 +161,10 @@ func (s *Strategy) isCodeFlow(f *recovery.Flow) bool {
 	return value == s.NodeGroup().String()
 }
 
+var _ recovery.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) RecoveryDefended() {}
+
 func (s *Strategy) Recover(w http.ResponseWriter, r *http.Request, f *recovery.Flow) (err error) {
 	ctx, span := s.deps.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.code.Strategy.Recover")
 	span.SetAttributes(attribute.String("selfservice_flows_recovery_use", s.deps.Config().SelfServiceFlowRecoveryUse(ctx)))
@@ -184,6 +190,13 @@ func (s *Strategy) Recover(w http.ResponseWriter, r *http.Request, f *recovery.F
 		// If a CSRF violation occurs the flow is most likely FUBAR, as the user either lost the CSRF token, or an attack occured.
 		// In this case, we just issue a new flow and "abandon" the old flow.
 		return s.retryRecoveryFlow(w, r, flow.TypeBrowser, RetryWithError(err))
+	}
+
+	// Defense: Check via the gate, before any lookup or sending. Only a strategy can call it, as only it knows it is
+	// responsible and has its payload. Outcomes of a code are reported in recoveryUseCode: a wrong code is a message here.
+	// The address is typed on the steps that send; the step that checks a code names none, so the flow stands in for it.
+	if err := gate.From(ctx).Check(ctx, cmp.Or(body.Email, body.RecoveryConfirmAddress, body.RecoveryAddress, f.ID.String()), body.Code); err != nil {
+		return s.HandleRecoveryError(w, r, nil, body, err)
 	}
 
 	sID := s.RecoveryStrategyID()
@@ -355,6 +368,7 @@ func (s *Strategy) recoveryUseCode(w http.ResponseWriter, r *http.Request, body 
 	ctx := r.Context()
 	code, err := s.deps.RecoveryCodePersister().UseRecoveryCode(ctx, f.ID, body.Code)
 	if errors.Is(err, ErrCodeNotFound()) {
+		gate.From(ctx).Failed(ctx)
 		f.UI.Messages.Clear()
 		f.UI.Messages.Add(text.NewErrorValidationRecoveryCodeInvalidOrAlreadyUsed())
 		if err := s.deps.RecoveryFlowPersister().UpdateRecoveryFlow(ctx, f); err != nil {
@@ -370,6 +384,7 @@ func (s *Strategy) recoveryUseCode(w http.ResponseWriter, r *http.Request, body 
 	} else if err != nil {
 		return s.retryRecoveryFlow(w, r, f.Type, RetryWithError(err))
 	}
+	gate.From(ctx).Succeeded(ctx)
 
 	// Important to expand everything here, as we need the data for recovery.
 	recovered, err := s.deps.IdentityPool().GetIdentity(ctx, code.IdentityID, identity.ExpandEverything)

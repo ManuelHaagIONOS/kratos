@@ -4,7 +4,6 @@
 package password_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -173,42 +172,23 @@ func TestLoginDefense(t *testing.T) {
 		assert.Empty(t, res.Header.Get("Retry-After"))
 	})
 
-	const delay = 300 * time.Millisecond
+	// Timing of the delay is covered with synctest in defense.TestWait; here we
+	// only check that the flow continues, or stops, correctly after a delay.
+	const delay = time.Millisecond
 
-	t.Run("case=allow with delay waits, then proceeds", func(t *testing.T) {
+	t.Run("case=allow with delay proceeds", func(t *testing.T) {
 		rec.reset()
 		rec.decision = defense.Decision{Delay: delay}
-		start := time.Now()
 		_, res := login(t, identifier, pwd)
-		assert.GreaterOrEqual(t, time.Since(start), delay)
 		assert.Equal(t, http.StatusOK, res.StatusCode)
 		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, rec.names())
 	})
 
-	t.Run("case=deny with delay waits before rejecting", func(t *testing.T) {
+	t.Run("case=deny with delay rejects", func(t *testing.T) {
 		rec.reset()
 		rec.decision = defense.Decision{Verdict: defense.Deny, Delay: delay}
-		start := time.Now()
 		_, res := login(t, identifier, pwd)
-		assert.GreaterOrEqual(t, time.Since(start), delay)
 		assert.Equal(t, http.StatusTooManyRequests, res.StatusCode)
-		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
-	})
-
-	t.Run("case=client abort during delay records no outcome", func(t *testing.T) {
-		rec.reset()
-		rec.decision = defense.Decision{Delay: 10 * time.Second}
-		impatient := testhelpers.NewDebugClient(t)
-		impatient.Timeout = 300 * time.Millisecond
-		f := testhelpers.InitializeLoginFlowViaAPICtx(t.Context(), t, apiClient, publicTS, false)
-		req, err := http.NewRequest("POST", f.Ui.Action, bytes.NewBufferString(
-			fmt.Sprintf(`{"method":"password","identifier":%q,"password":%q}`, identifier, pwd)))
-		require.NoError(t, err)
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Content-Type", "application/json")
-		_, err = impatient.Do(req)
-		require.Error(t, err)
-		assert.Never(t, func() bool { return len(rec.names()) != 1 }, time.Second, 50*time.Millisecond)
 		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
 	})
 

@@ -91,12 +91,8 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 		s.d.Logger().WithError(err).Error("Defense.BeforeAttempt failed, rejecting login attempt.")
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(herodot.ErrInternalServerError().WithReason("The login attempt could not be evaluated.")))
 	}
-	if dec.Delay > 0 {
-		select {
-		case <-time.After(dec.Delay):
-		case <-ctx.Done():
-			return nil, s.handleLoginError(r, f, p, errors.WithStack(ctx.Err()))
-		}
+	if err := defense.Wait(ctx, dec.Delay); err != nil {
+		return nil, s.handleLoginError(r, f, p, errors.WithStack(err))
 	}
 	if dec.Verdict == defense.Deny {
 		s.d.Logger().WithField("reason", dec.Reason).Info("Login attempt denied by defense.")

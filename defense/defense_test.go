@@ -4,7 +4,10 @@
 package defense_test
 
 import (
+	"context"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,5 +28,34 @@ func TestNoop(t *testing.T) {
 	assert.NotPanics(t, func() {
 		d.AfterSuccess(t.Context(), a)
 		d.AfterFailure(t.Context(), a)
+	})
+}
+
+func TestWait(t *testing.T) {
+	t.Run("case=waits for the full duration", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			start := time.Now()
+			require.NoError(t, defense.Wait(t.Context(), 5*time.Minute))
+			assert.Equal(t, 5*time.Minute, time.Since(start))
+		})
+	})
+
+	t.Run("case=non-positive duration returns at once", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			start := time.Now()
+			require.NoError(t, defense.Wait(t.Context(), 0))
+			require.NoError(t, defense.Wait(t.Context(), -time.Second))
+			assert.Zero(t, time.Since(start))
+		})
+	})
+
+	t.Run("case=context cancellation ends the wait early", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			time.AfterFunc(time.Second, cancel)
+			start := time.Now()
+			require.ErrorIs(t, defense.Wait(ctx, time.Hour), context.Canceled)
+			assert.Equal(t, time.Second, time.Since(start))
+		})
 	})
 }

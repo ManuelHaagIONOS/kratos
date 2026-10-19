@@ -79,3 +79,19 @@ var _ Defense = Noop{}
 func (Noop) BeforeAttempt(context.Context, Attempt) (Decision, error) { return Decision{}, nil }
 func (Noop) AfterSuccess(context.Context, Attempt)                    {}
 func (Noop) AfterFailure(context.Context, Attempt)                    {}
+
+// Wait sleeps for d, or until ctx is done, whichever comes first. It returns
+// ctx.Err() if the context ended the wait. A non-positive d returns at once.
+func Wait(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}

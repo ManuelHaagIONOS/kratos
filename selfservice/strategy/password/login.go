@@ -8,7 +8,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -19,6 +21,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
@@ -32,6 +35,7 @@ import (
 	"github.com/ory/kratos/ui/node"
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/decoderx"
+	"github.com/ory/x/httpx"
 )
 
 var _ login.AAL1FormHydrator = new(Strategy)
@@ -75,8 +79,43 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 
 	identifier := cmp.Or(p.Identifier, p.LegacyIdentifier)
+
+	fp := defense.NewFingerprinter(s.d.Config().DefenseFingerprintSecret(ctx))
+	attempt := defense.Attempt{
+		Method:           defense.MethodPassword,
+		IdentifierDigest: fp.Identifier(identifier),
+		CredentialDigest: fp.Credential(p.Password),
+		IP:               defense.ParseIP(httpx.ClientIP(r)),
+	}
+	dec, err := s.d.Defense().BeforeAttempt(ctx, attempt)
+	if err != nil {
+		// Fail open: an unavailable defense (e.g. its backing store) must not lock out all users.
+		s.d.Logger().WithError(err).Error("Defense.BeforeAttempt failed, allowing login attempt.")
+		dec = defense.Decision{}
+	}
+	if err := dec.Wait(ctx, s.d.Config().DefenseMaxDelay(ctx)); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// The client went away, there is nobody left to answer.
+			return nil, errors.WithStack(err)
+		}
+		return nil, s.handleLoginError(r, f, p, errors.WithStack(err))
+	}
+	if dec.Verdict == defense.Deny {
+		s.d.Logger().WithField("reason", dec.Reason).Info("Login attempt denied by defense.")
+		if dec.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(dec.RetryAfter.Seconds())), 10))
+		}
+		return nil, s.handleLoginError(r, f, p, errors.WithStack(&herodot.DefaultError{
+			StatusField: http.StatusText(http.StatusTooManyRequests),
+			ErrorField:  "Too Many Requests",
+			CodeField:   http.StatusTooManyRequests,
+			ReasonField: "Too many login attempts. Please try again later.",
+		}))
+	}
+
 	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), identifier)
 	if err != nil {
+		s.d.Defense().AfterFailure(ctx, attempt)
 		time.Sleep(x.RandomDelay(s.d.Config().HasherArgon2(ctx).ExpectedDuration, s.d.Config().HasherArgon2(ctx).ExpectedDeviation))
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(schema.NewInvalidCredentialsError()))
 	}
@@ -84,12 +123,15 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))
 	if err := d.Decode(&o); err != nil {
+		// A server-side fault, not a failed guess: not reported to the defense,
+		// so that broken records cannot lock out their owner.
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The password credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 
 	if o.ShouldUsePasswordMigrationHook() {
 		pwHook := s.d.Config().PasswordMigrationHook(ctx)
 		if !pwHook.Enabled {
+			// Operator error and no verdict on the credentials: neither success nor failure is reported.
 			return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrMisconfiguration().WithReasonf("Password migration hook is not enabled but password migration is requested.")), i.ID)
 		}
 
@@ -100,16 +142,20 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 			Identity:   i,
 		})
 		if err != nil {
+			s.d.Defense().AfterFailure(ctx, attempt)
 			return nil, s.handleLoginError(r, f, p, x.WrapWithIdentityIDError(err, i.ID))
 		}
+		s.d.Defense().AfterSuccess(ctx, attempt)
 
 		if err := s.migratePasswordHash(ctx, i.ID, []byte(p.Password)); err != nil {
 			return nil, s.handleLoginError(r, f, p, x.WrapWithIdentityIDError(err, i.ID))
 		}
 	} else {
 		if err := hash.Compare(ctx, []byte(p.Password), []byte(o.HashedPassword)); err != nil {
+			s.d.Defense().AfterFailure(ctx, attempt)
 			return nil, s.handleLoginError(r, f, p, errors.WithStack(x.WrapWithIdentityIDError(schema.NewInvalidCredentialsError(), i.ID)))
 		}
+		s.d.Defense().AfterSuccess(ctx, attempt)
 
 		if !s.d.Hasher(ctx).Understands([]byte(o.HashedPassword)) {
 			if err := s.migratePasswordHash(ctx, i.ID, []byte(p.Password)); err != nil {

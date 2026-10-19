@@ -2900,6 +2900,26 @@
       },
       "additionalProperties": false
     },
+    "defense": {
+      "title": "Attack Defense Configuration",
+      "type": "object",
+      "properties": {
+        "fingerprint_key": {
+          "title": "Defense fingerprint key",
+          "description": "Secret from which the keyed digests of identifiers and submitted credentials handed to the attack defense are derived. Defaults to the first entry of secrets.default. Changing it resets the defense's counters.",
+          "type": "string",
+          "minLength": 16
+        },
+        "max_delay": {
+          "title": "Maximum defense delay",
+          "description": "A safety net against a faulty attack defense: the upper bound for the delay it may impose on a single login attempt. The defense decides its own delays; longer ones are shortened to this value.",
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
+          "default": "10s"
+        }
+      },
+      "additionalProperties": false
+    },
     "ciphers": {
       "title": "Cipher Algorithm Configuration",
       "type": "object",

@@ -161,6 +161,8 @@ const (
 	ViperKeySelfServiceVerificationNotifyUnknownRecipients   = "selfservice.flows.verification.notify_unknown_recipients"
 	ViperKeyDefaultIdentitySchemaID                          = "identity.default_schema_id"
 	ViperKeyIdentitySchemas                                  = "identity.schemas"
+	ViperKeyDefenseFingerprintKey                            = "defense.fingerprint_key"
+	ViperKeyDefenseMaxDelay                                  = "defense.max_delay"
 	ViperKeyHasherAlgorithm                                  = "hashers.algorithm"
 	ViperKeyHasherArgon2ConfigMemory                         = "hashers.argon2.memory"
 	ViperKeyHasherArgon2ConfigIterations                     = "hashers.argon2.iterations"
@@ -226,6 +228,10 @@ const (
 	Argon2DefaultDeviation              = 500 * time.Millisecond
 	Argon2DefaultDedicatedMemory        = 1 * bytesize.GB
 	BcryptDefaultCost            uint32 = 12
+
+	// DefenseDefaultMaxDelay is a safety net against a faulty defense, not
+	// policy: the defense decides how long to delay.
+	DefenseDefaultMaxDelay = 10 * time.Second
 )
 
 // DefaultSessionCookieName returns the default cookie name for the kratos session.
@@ -565,6 +571,22 @@ func (p *Config) MustSet(_ context.Context, key string, value interface{}) {
 
 func (p *Config) SessionName(ctx context.Context) string {
 	return cmp.Or(p.GetProvider(ctx).String(ViperKeySessionName), DefaultSessionCookieName)
+}
+
+// DefenseMaxDelay is the upper bound for the delay a defense.Defense may impose
+// on a single attempt.
+func (p *Config) DefenseMaxDelay(ctx context.Context) time.Duration {
+	return p.GetProvider(ctx).DurationF(ViperKeyDefenseMaxDelay, DefenseDefaultMaxDelay)
+}
+
+// DefenseFingerprintSecret is the secret from which the identifier and
+// credential digests handed to a defense.Defense are derived. It falls back to
+// the first default secret; rotating it resets the defense's counters.
+func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
+	if k := p.GetProvider(ctx).String(ViperKeyDefenseFingerprintKey); k != "" {
+		return []byte(k)
+	}
+	return p.SecretsDefault(ctx)[0]
 }
 
 func (p *Config) HasherArgon2(ctx context.Context) *Argon2 {

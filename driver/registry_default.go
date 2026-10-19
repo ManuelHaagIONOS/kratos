@@ -25,6 +25,7 @@ import (
 	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/continuity"
 	"github.com/ory/kratos/courier"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/hydra"
@@ -88,6 +89,7 @@ type RegistryDefault struct {
 	injectedSelfserviceHooks map[string]NewHookFn
 	extraHandlerFactories    []NewHandler
 	extraHandlers            []x.Handler
+	defense                  defense.Defense
 	slOptions                *servicelocatorx.Options
 
 	nosurf         nosurf.Handler
@@ -566,6 +568,19 @@ func (m *RegistryDefault) Hasher(ctx context.Context) hash.Hasher {
 	})
 }
 
+// WithDefense replaces the Defense returned by Defense(). See WithDefense option.
+func (m *RegistryDefault) WithDefense(d defense.Defense) {
+	m.defense = d
+}
+
+// Defense returns the injected Defense, or a no-op if none was injected.
+func (m *RegistryDefault) Defense() defense.Defense {
+	if m.defense == nil {
+		return defense.Noop{}
+	}
+	return m.defense
+}
+
 func (m *RegistryDefault) PasswordValidator() password.Validator {
 	m.passwordValidator.Get(func() password.Validator {
 		val, err := password.NewDefaultPasswordValidatorStrategy(m)
@@ -689,6 +704,9 @@ func (m *RegistryDefault) Init(ctx context.Context, ctxer contextx.Contextualize
 	}
 	if o.extraHashers != nil {
 		m.WithHashers(o.extraHashers)
+	}
+	if o.defense != nil {
+		m.WithDefense(o.defense)
 	}
 	if o.extraHandlers != nil {
 		m.WithExtraHandlers(o.extraHandlers)

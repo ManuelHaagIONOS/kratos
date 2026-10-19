@@ -165,6 +165,12 @@ type Defense interface {
 	// Server-side faults (corrupt records, misconfiguration) are reported to
 	// neither After method, as they say nothing about the client.
 	AfterFailure(ctx context.Context, a Attempt)
+	// UsesKnownDeviceVerdict reports whether the defense acts on Attempt.Device.
+	// With defense.known_device_cookie.enabled at its default, auto, Kratos
+	// issues and validates the KnownDeviceCookie only for a defense that does:
+	// for any other it would be a long-lived cookie that nobody reads. It is
+	// asked on every use, so the answer may change over the life of the process.
+	UsesKnownDeviceVerdict() bool
 }
 
 // Provider gives access to the active Defense.
@@ -180,6 +186,7 @@ var _ Defense = Noop{}
 func (Noop) BeforeAttempt(context.Context, Attempt) (Decision, error) { return Decision{}, nil }
 func (Noop) AfterSuccess(context.Context, Attempt)                    {}
 func (Noop) AfterFailure(context.Context, Attempt)                    {}
+func (Noop) UsesKnownDeviceVerdict() bool                             { return false }
 
 // Wait sleeps for the decision's Delay, capped at maxDelay. See the package
 // level Wait for the semantics.

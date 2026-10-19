@@ -24,6 +24,7 @@ type Recorder struct {
 	calls    []Call
 	decision defense.Decision
 	err      error
+	uses     bool
 }
 
 var _ defense.Defense = (*Recorder)(nil)
@@ -43,6 +44,21 @@ func (r *Recorder) BeforeAttempt(_ context.Context, a defense.Attempt) (defense.
 
 func (r *Recorder) AfterSuccess(_ context.Context, a defense.Attempt) { r.record("AfterSuccess", a) }
 func (r *Recorder) AfterFailure(_ context.Context, a defense.Attempt) { r.record("AfterFailure", a) }
+
+// UsesKnownDeviceVerdict implements defense.Defense. It is false unless
+// UseKnownDeviceVerdict was called.
+func (r *Recorder) UsesKnownDeviceVerdict() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.uses
+}
+
+// UseKnownDeviceVerdict sets what UsesKnownDeviceVerdict returns.
+func (r *Recorder) UseKnownDeviceVerdict(uses bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.uses = uses
+}
 
 // Answer sets what BeforeAttempt returns from now on.
 func (r *Recorder) Answer(d defense.Decision, err error) {

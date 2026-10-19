@@ -42,6 +42,8 @@ type recordingDefense struct {
 	calls    []recordedCall
 	decision defense.Decision
 	err      error
+	// uses is the answer of UsesKnownDeviceVerdict.
+	uses bool
 }
 
 func (r *recordingDefense) record(name string, a defense.Attempt) {
@@ -60,6 +62,10 @@ func (r *recordingDefense) AfterSuccess(_ context.Context, a defense.Attempt) {
 func (r *recordingDefense) AfterFailure(_ context.Context, a defense.Attempt) {
 	r.record("AfterFailure", a)
 }
+
+// UsesKnownDeviceVerdict is false unless the test sets uses, so that the tests
+// that want the cookie ask for it, by configuration or by this.
+func (r *recordingDefense) UsesKnownDeviceVerdict() bool { return r.uses }
 
 func (r *recordingDefense) names() (n []string) {
 	r.mu.Lock()

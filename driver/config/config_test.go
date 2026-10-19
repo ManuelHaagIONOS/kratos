@@ -491,7 +491,7 @@ func TestKnownDeviceCookieConfig(t *testing.T) {
 	t.Run("case=defaults", func(t *testing.T) {
 		t.Parallel()
 		p := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, configx.SkipValidation())
-		assert.False(t, p.KnownDeviceCookieEnabled(ctx), "off unless enabled")
+		assert.Equal(t, config.KnownDeviceCookieAuto, p.KnownDeviceCookieMode(ctx), "follows the defense unless set")
 		assert.Equal(t, p.SecretsDefault(ctx), p.KnownDeviceCookieSecrets(ctx), "falls back to secrets.default, not secrets.cookie")
 		assert.Equal(t, 90*24*time.Hour, p.KnownDeviceCookieLifespan(ctx))
 		assert.Equal(t, "ory_kratos_known_device", p.KnownDeviceCookieName(ctx))
@@ -509,8 +509,34 @@ func TestKnownDeviceCookieConfig(t *testing.T) {
 		assert.Equal(t, [][]byte{[]byte("device-secret-new-1"), []byte("device-secret-old-1")}, p.KnownDeviceCookieSecrets(ctx))
 		assert.Equal(t, 180*24*time.Hour, p.KnownDeviceCookieLifespan(ctx))
 		assert.Equal(t, "device", p.KnownDeviceCookieName(ctx))
-		assert.True(t, p.KnownDeviceCookieEnabled(ctx))
+		assert.Equal(t, config.KnownDeviceCookieOn, p.KnownDeviceCookieMode(ctx))
 	})
+}
+
+func TestKnownDeviceCookieMode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		value any
+		want  config.KnownDeviceCookieMode
+	}{
+		"auto":            {"auto", config.KnownDeviceCookieAuto},
+		"empty":           {"", config.KnownDeviceCookieAuto},
+		"true":            {true, config.KnownDeviceCookieOn},
+		"false":           {false, config.KnownDeviceCookieOff},
+		"string true":     {"true", config.KnownDeviceCookieOn},
+		"string false":    {"false", config.KnownDeviceCookieOff},
+		"case and spaces": {" TRUE ", config.KnownDeviceCookieOn},
+		"unknown":         {"banana", config.KnownDeviceCookieAuto},
+		"number":          {1, config.KnownDeviceCookieAuto},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			p := config.MustNew(t, logrusx.New("", ""), &contextx.Default{}, configx.SkipValidation(),
+				configx.WithValue(config.ViperKeyKnownDeviceCookieEnabled, tc.value))
+			assert.Equal(t, tc.want, p.KnownDeviceCookieMode(ctx))
+		})
+	}
 }
 
 func TestViperProvider_Defaults(t *testing.T) {

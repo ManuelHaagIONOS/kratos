@@ -36,6 +36,16 @@ type knownDeviceFixture struct {
 
 func newKnownDeviceFixture(t *testing.T, enabled bool) *knownDeviceFixture {
 	t.Helper()
+	if enabled {
+		return newKnownDeviceFixtureMode(t, true, false)
+	}
+	return newKnownDeviceFixtureMode(t, nil, false)
+}
+
+// newKnownDeviceFixtureMode sets defense.known_device_cookie.enabled to mode (unset
+// if nil) and makes the recording defense answer uses to UsesKnownDeviceVerdict.
+func newKnownDeviceFixtureMode(t *testing.T, mode any, uses bool) *knownDeviceFixture {
+	t.Helper()
 
 	opts := []configx.OptionModifier{
 		configx.WithValue(config.ViperKeySelfServiceStrategyConfig+"."+string(identity.CredentialsTypePassword)+".enabled", true),
@@ -43,11 +53,11 @@ func newKnownDeviceFixture(t *testing.T, enabled bool) *knownDeviceFixture {
 			"default": "file://./stub/login.schema.json",
 		})),
 	}
-	if enabled {
-		opts = append(opts, configx.WithValue(config.ViperKeyKnownDeviceCookieEnabled, true))
+	if mode != nil {
+		opts = append(opts, configx.WithValue(config.ViperKeyKnownDeviceCookieEnabled, mode))
 	}
 	_, reg := pkg.NewFastRegistryWithMocks(t, opts...)
-	rec := new(recordingDefense)
+	rec := &recordingDefense{uses: uses}
 	reg.WithDefense(rec)
 
 	ts, _ := testhelpers.NewKratosServerWithRouters(t, reg, httprouterx.NewRouterPublic(), httprouterx.NewRouterAdminWithPrefix())
@@ -127,8 +137,36 @@ func TestLoginKnownDeviceCookie(t *testing.T) {
 			assert.Nil(t, knownDeviceCookie(res))
 			assert.Equal(t, defense.DeviceNone, f.lastDevice(t))
 		}
-		assert.False(t, f.reg.Config().KnownDeviceCookieEnabled(t.Context()))
+		assert.Equal(t, config.KnownDeviceCookieAuto, f.reg.Config().KnownDeviceCookieMode(t.Context()))
 		assert.Nil(t, f.reg.KnownDeviceCookie(t.Context()))
+	})
+
+	t.Run("case=auto: a defense that uses the verdict gets the cookie with no configuration", func(t *testing.T) {
+		t.Parallel()
+		f := newKnownDeviceFixtureMode(t, nil, true)
+		identifier := f.identity(t)
+		client := testhelpers.NewClientWithCookies(t)
+
+		res := f.loginSPA(t, client, identifier, "password")
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.NotNil(t, knownDeviceCookie(res), "cookies: %v", res.Cookies())
+		f.rec.reset()
+		require.Equal(t, http.StatusOK, f.loginSPA(t, client, identifier, "password").StatusCode)
+		assert.Equal(t, defense.DeviceKnown, f.lastDevice(t))
+	})
+
+	t.Run("case=false wins over a defense that uses the verdict", func(t *testing.T) {
+		t.Parallel()
+		f := newKnownDeviceFixtureMode(t, false, true)
+		identifier := f.identity(t)
+		client := testhelpers.NewClientWithCookies(t)
+
+		for range 2 {
+			res := f.loginSPA(t, client, identifier, "password")
+			require.Equal(t, http.StatusOK, res.StatusCode)
+			assert.Nil(t, knownDeviceCookie(res))
+			assert.Equal(t, defense.DeviceNone, f.lastDevice(t))
+		}
 	})
 
 	t.Run("case=enabled: the cookie is issued at login and recognised at the next", func(t *testing.T) {

@@ -594,10 +594,39 @@ func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
 	return p.SecretsDefault(ctx)[0]
 }
 
-// KnownDeviceCookieEnabled reports whether KnownDeviceCookies are issued after
-// login and validated before credential checks. It is off by default.
-func (p *Config) KnownDeviceCookieEnabled(ctx context.Context) bool {
-	return p.GetProvider(ctx).Bool(ViperKeyKnownDeviceCookieEnabled)
+// KnownDeviceCookieMode says whether the KnownDeviceCookie is issued after login
+// and validated before credential checks.
+type KnownDeviceCookieMode uint8
+
+const (
+	// KnownDeviceCookieAuto, the default, follows the attack defense: on if
+	// defense.Defense.UsesKnownDeviceVerdict, off for any other.
+	KnownDeviceCookieAuto KnownDeviceCookieMode = iota
+	// KnownDeviceCookieOn forces the cookie on, whatever the defense.
+	KnownDeviceCookieOn
+	// KnownDeviceCookieOff forces the cookie off, whatever the defense.
+	KnownDeviceCookieOff
+)
+
+// KnownDeviceCookieMode reads defense.known_device_cookie.enabled: auto (also
+// when unset), true or false, as a boolean or as the string of an environment
+// variable. Anything else, which the schema rejects, counts as auto.
+func (p *Config) KnownDeviceCookieMode(ctx context.Context) KnownDeviceCookieMode {
+	switch v := p.GetProvider(ctx).Get(ViperKeyKnownDeviceCookieEnabled).(type) {
+	case bool:
+		if v {
+			return KnownDeviceCookieOn
+		}
+		return KnownDeviceCookieOff
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true":
+			return KnownDeviceCookieOn
+		case "false":
+			return KnownDeviceCookieOff
+		}
+	}
+	return KnownDeviceCookieAuto
 }
 
 // KnownDeviceCookieSecrets are the secrets the KnownDeviceCookie is signed

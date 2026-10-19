@@ -81,6 +81,9 @@ type RegistryDefault struct {
 	l *logrusx.Logger
 	c *config.Config
 
+	// knownDeviceAutoOnce logs once that the known device cookie follows the defense.
+	knownDeviceAutoOnce sync.Once
+
 	// clock is the time source for time-dependent behavior such as flow expiry.
 	// It is set eagerly in initCheapMembers and replaced in tests via SetClock.
 	clock clock.Clock
@@ -583,12 +586,21 @@ func (m *RegistryDefault) Defense() defense.Defense {
 }
 
 // KnownDeviceCookie returns the codec for the KnownDeviceCookie, or nil if it
-// is not enabled. It is built per call so that secret and config changes apply
+// is not enabled: forced by defense.known_device_cookie.enabled, or, at its
+// default auto, when the attack defense uses the verdict. It is built per call so that secret and config changes apply
 // on hot reload; deriving the keys costs a few hashes.
 func (m *RegistryDefault) KnownDeviceCookie(ctx context.Context) *knowndevicecookie.Codec {
 	c := m.Config()
-	if !c.KnownDeviceCookieEnabled(ctx) {
+	switch c.KnownDeviceCookieMode(ctx) {
+	case config.KnownDeviceCookieOff:
 		return nil
+	case config.KnownDeviceCookieAuto:
+		if !m.Defense().UsesKnownDeviceVerdict() {
+			return nil
+		}
+		m.knownDeviceAutoOnce.Do(func() {
+			m.Logger().Info("The known device cookie is enabled because the attack defense uses it. Set defense.known_device_cookie.enabled to false to turn it off.")
+		})
 	}
 	codec, err := knowndevicecookie.New(c.KnownDeviceCookieSecrets(ctx), knowndevicecookie.Config{
 		Name:     c.KnownDeviceCookieName(ctx),

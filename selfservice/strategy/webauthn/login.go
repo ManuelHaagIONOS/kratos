@@ -35,6 +35,8 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/selfservice/flow"
@@ -149,6 +151,10 @@ type updateLoginFlowWithWebAuthnMethod struct {
 	TransientPayload json.RawMessage `json:"transient_payload,omitempty" form:"transient_payload"`
 }
 
+var _ login.DefendedStrategy = (*Strategy)(nil)
+
+func (s *Strategy) DefenseMethod() defense.MethodID { return defense.MethodWebAuthn }
+
 func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, sess *session.Session) (i *identity.Identity, err error) {
 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.webauthn.Strategy.Login")
 	defer otelx.End(span, &err)
@@ -206,6 +212,12 @@ func (s *Strategy) loginPasswordless(ctx context.Context, w http.ResponseWriter,
 
 	if p.Identifier == "" {
 		return nil, s.handleLoginError(r, f, errors.WithStack(herodot.ErrBadRequest().WithReason("identifier is required")))
+	}
+
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	if err := gate.From(ctx).Check(ctx, p.Identifier, ""); err != nil {
+		return nil, s.handleLoginError(r, f, err)
 	}
 
 	i, _, err = s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), p.Identifier)
@@ -316,6 +328,14 @@ func (s *Strategy) loginMultiFactor(ctx context.Context, r *http.Request, f *log
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("not_responsible_reason", "requested AAL is not AAL2"))
 		return nil, err
 	}
+
+	// Defense: BeforeAttempt via the gate, before any lookup or hashing. Only a strategy can call it, as only it knows
+	// it is responsible and has its payload. Do not call AfterSuccess/AfterFailure: the login handler reports them.
+	// The account is the one of the session: a second factor follows a verified first one.
+	if err := gate.From(ctx).Check(ctx, identityID.String(), ""); err != nil {
+		return nil, s.handleLoginError(r, f, err)
+	}
+
 	return s.loginAuthenticate(ctx, r, f, identityID, p, identity.AuthenticatorAssuranceLevel2)
 }
 

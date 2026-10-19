@@ -2910,6 +2910,27 @@
           "type": "string",
           "minLength": 16
         },
+        "client_ip": {
+          "title": "Client IP",
+          "description": "Where the client's address comes from, for the attack defense, session devices and telemetry. By default only the TCP peer is used and every forwarding header is ignored, as any client can send them.",
+          "type": "object",
+          "properties": {
+            "header": {
+              "title": "Client IP header",
+              "description": "The one header the trusted proxy sets, e.g. True-Client-IP. For X-Forwarded-For, the right-most entry that is not itself a trusted proxy is used.",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]+$"
+            },
+            "trusted_proxies": {
+              "title": "Trusted proxies",
+              "description": "CIDRs (or single addresses) of the proxies whose header, and Cf-* geo headers, are believed. A peer outside them is the client.",
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
         "max_delay": {
           "title": "Maximum defense delay",
           "description": "A safety net against a faulty attack defense: the upper bound for the delay it may impose on a single login attempt. The defense decides its own delays; longer ones are shortened to this value.",

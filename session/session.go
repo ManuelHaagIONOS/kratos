@@ -296,11 +296,13 @@ func (s *Session) SetSessionDeviceInformation(r *http.Request) {
 	}
 
 	var clientGeoLocation []string
-	if r.Header.Get("Cf-Ipcity") != "" {
-		clientGeoLocation = append(clientGeoLocation, r.Header.Get("Cf-Ipcity"))
+	// Geo headers count only from a trusted proxy (see httpx.ContextWithClientInfo).
+	geo := httpx.ClientGeoLocation(r)
+	if geo.City != "" {
+		clientGeoLocation = append(clientGeoLocation, geo.City)
 	}
-	if r.Header.Get("Cf-Ipcountry") != "" {
-		clientGeoLocation = append(clientGeoLocation, r.Header.Get("Cf-Ipcountry"))
+	if geo.Country != "" {
+		clientGeoLocation = append(clientGeoLocation, geo.Country)
 	}
 	loc := strings.Join(clientGeoLocation, ", ")
 	device.Location = &loc

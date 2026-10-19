@@ -6,11 +6,17 @@
 // defense a request comes from a device which has logged in to this account
 // before.
 //
-// The cookie is signed, not encrypted. It carries the canonicalized
-// identifier in plaintext next to its issue time and an HMAC over both, so
-// validation needs one HMAC and no database access, and can run before
-// defense.Defense.BeforeAttempt. It is bound to the identifier it was issued
-// for and to the cookie name.
+// The cookie is signed, not encrypted. It holds up to MaxEntries independent
+// entries, one per account used on the device. Each entry carries the
+// canonicalized identifier in plaintext next to its issue time and an HMAC
+// over both, so validation needs one HMAC and no database access, and can run
+// before defense.Defense.BeforeAttempt. An entry is bound to the identifier it
+// was issued for and to the cookie name.
+//
+// Verification cost and cookie size are bounded whatever a client sends: a
+// value over MaxValueLength or with more than MaxEntries entries is rejected
+// before any crypto, and Verify computes one HMAC per secret, for the entry of
+// the identifier being attempted only.
 //
 // Signing keys are derived with HKDF-SHA256 from the configured secrets. The
 // first secret signs, all of them verify, so secrets rotate by prepending a
@@ -41,9 +47,22 @@ const (
 	// DefaultLifespan is used when Config.Lifespan is not positive.
 	DefaultLifespan = 90 * 24 * time.Hour
 
-	// version prefixes the wire format, which is
+	// MaxEntries is the number of accounts remembered per device. Issuing for
+	// a further account evicts the oldest entry.
+	MaxEntries = 3
+	// MaxIdentifierLength is the longest identifier, in bytes after
+	// canonicalization, that an entry can be issued for.
+	MaxIdentifierLength = 254
+	// MaxValueLength bounds the cookie value that is looked at. MaxEntries
+	// entries of the longest identifier take about 1.3 KiB, well below the
+	// 4 KiB browsers allow.
+	MaxValueLength = 1536
+
+	// version prefixes the wire format of an entry, which is
 	// version "." base64url(identifier) "." issued-at "." base64url(mac).
-	version = "v1"
+	// Entries are joined by entrySeparator, which none of their characters is.
+	version        = "v1"
+	entrySeparator = "~"
 	// kdfInfo domain-separates the HKDF key derivation.
 	kdfInfo = "ory/kratos/knowndevicecookie/v1"
 )
@@ -52,8 +71,8 @@ const (
 type Config struct {
 	// Name is the cookie name. It is bound into the MAC. Default DefaultName.
 	Name string
-	// Lifespan is how long a cookie is valid, counted from the last login.
-	// Default DefaultLifespan.
+	// Lifespan is how long an entry is valid, counted from the last login to
+	// its account. Default DefaultLifespan.
 	Lifespan time.Duration
 	// Domain and Path scope the cookie. Path defaults to "/".
 	Domain, Path string
@@ -65,6 +84,14 @@ type Config struct {
 type Codec struct {
 	cfg  Config
 	keys [][]byte
+}
+
+// entry is one remembered account.
+type entry struct {
+	id  string
+	iat int64
+	mac []byte
+	raw string
 }
 
 // New returns a Codec signing with the first secret and verifying with all.
@@ -92,22 +119,39 @@ func New(secrets [][]byte, cfg Config) (*Codec, error) {
 	return &Codec{cfg: cfg, keys: keys}, nil
 }
 
-// Issue sets a fresh cookie for identifier on w. Call it on every successful
-// login, so the lifespan slides.
-func (c *Codec) Issue(w http.ResponseWriter, identifier string) error {
+// Issue sets a cookie on w that remembers identifier. Call it on every
+// successful login, so the entry's lifespan slides.
+//
+// The entries of the cookie on r are carried over, newest first, unless they
+// are for the same account, expired or not authentic. The oldest are evicted
+// beyond MaxEntries. Carried entries keep their issue time: only the account
+// that just logged in gets a fresh lifespan.
+func (c *Codec) Issue(w http.ResponseWriter, r *http.Request, identifier string) error {
 	id := defense.Canonicalize(identifier)
-	if id == "" {
-		return errors.New("knowndevicecookie: identifier is empty")
+	if id == "" || len(id) > MaxIdentifierLength {
+		return errors.New("knowndevicecookie: identifier is empty or too long")
 	}
 	iat := time.Now().Unix()
-	v := version + "." +
+	entries := []string{version + "." +
 		base64.RawURLEncoding.EncodeToString([]byte(id)) + "." +
 		strconv.FormatInt(iat, 10) + "." +
-		base64.RawURLEncoding.EncodeToString(c.mac(c.keys[0], iat, id))
+		base64.RawURLEncoding.EncodeToString(c.mac(c.keys[0], iat, id))}
+
+	if ck, err := r.Cookie(c.cfg.Name); err == nil && len(ck.Value) <= MaxValueLength {
+		for _, raw := range strings.Split(ck.Value, entrySeparator) {
+			if len(entries) == MaxEntries {
+				break
+			}
+			e, ok := parseEntry(raw)
+			if ok && e.id != id && c.validMAC(e) && !c.expired(e) {
+				entries = append(entries, e.raw)
+			}
+		}
+	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     c.cfg.Name,
-		Value:    v,
+		Value:    strings.Join(entries, entrySeparator),
 		Domain:   c.cfg.Domain,
 		Path:     c.cfg.Path,
 		MaxAge:   int(c.cfg.Lifespan / time.Second),
@@ -120,51 +164,77 @@ func (c *Codec) Issue(w http.ResponseWriter, identifier string) error {
 
 // Verify returns the verdict on the cookie of r for the identifier being
 // attempted. It does no I/O.
+//
+//   - DeviceNone: no cookie, or a well-formed one without a current entry for
+//     the identifier. On a shared device that is a new account, not a suspect.
+//     An expired entry is authentic but stale, a returning user whose entry
+//     ran out.
+//   - DeviceInvalid: a cookie that is malformed, oversized or has too many
+//     entries, or an entry for the identifier whose MAC fails.
+//   - DeviceKnown: a valid, unexpired entry for the identifier.
 func (c *Codec) Verify(r *http.Request, identifier string) defense.DeviceState {
 	ck, err := r.Cookie(c.cfg.Name)
 	if err != nil {
 		return defense.DeviceNone
 	}
-	id, iat, mac, ok := parse(ck.Value)
-	if !ok || !c.validMAC(iat, id, mac) {
+	if len(ck.Value) > MaxValueLength {
 		return defense.DeviceInvalid
 	}
-	// An expired cookie is authentic but stale: the user is a returning one
-	// whose cookie ran out, not a suspect.
-	if time.Since(time.Unix(iat, 0)) > c.cfg.Lifespan {
+	raws := strings.Split(ck.Value, entrySeparator)
+	if len(raws) > MaxEntries {
+		return defense.DeviceInvalid
+	}
+	id := defense.Canonicalize(identifier)
+	var match *entry
+	for _, raw := range raws {
+		e, ok := parseEntry(raw)
+		if !ok {
+			return defense.DeviceInvalid
+		}
+		if match == nil && e.id == id {
+			match = &e
+		}
+	}
+	switch {
+	case match == nil:
 		return defense.DeviceNone
-	}
-	if id != defense.Canonicalize(identifier) {
+	case !c.validMAC(*match):
 		return defense.DeviceInvalid
+	case c.expired(*match):
+		return defense.DeviceNone
 	}
 	return defense.DeviceKnown
 }
 
-func parse(v string) (id string, iat int64, mac []byte, ok bool) {
-	parts := strings.Split(v, ".")
+func parseEntry(raw string) (e entry, ok bool) {
+	parts := strings.Split(raw, ".")
 	if len(parts) != 4 || parts[0] != version {
-		return "", 0, nil, false
+		return entry{}, false
 	}
-	idb, err := base64.RawURLEncoding.DecodeString(parts[1])
+	id, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", 0, nil, false
+		return entry{}, false
 	}
-	iat, err = strconv.ParseInt(parts[2], 10, 64)
+	iat, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return "", 0, nil, false
+		return entry{}, false
 	}
-	mac, err = base64.RawURLEncoding.DecodeString(parts[3])
+	mac, err := base64.RawURLEncoding.DecodeString(parts[3])
 	if err != nil {
-		return "", 0, nil, false
+		return entry{}, false
 	}
-	return string(idb), iat, mac, true
+	return entry{id: string(id), iat: iat, mac: mac, raw: raw}, true
 }
 
-// validMAC checks mac against every key, so rotated secrets keep working.
-func (c *Codec) validMAC(iat int64, id string, mac []byte) bool {
+func (c *Codec) expired(e entry) bool {
+	return time.Since(time.Unix(e.iat, 0)) > c.cfg.Lifespan
+}
+
+// validMAC checks the entry against every key, so rotated secrets keep working.
+func (c *Codec) validMAC(e entry) bool {
 	valid := false
 	for _, k := range c.keys {
-		if hmac.Equal(mac, c.mac(k, iat, id)) {
+		if hmac.Equal(e.mac, c.mac(k, e.iat, e.id)) {
 			valid = true
 		}
 	}

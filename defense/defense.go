@@ -50,16 +50,17 @@ func (m MethodID) String() string {
 type DeviceState uint8
 
 const (
-	// DeviceNone means no usable KnownDeviceCookie was presented. It is the
-	// zero value. An expired cookie also maps to DeviceNone: expiry is routine
-	// for returning users and says nothing about the client, so it must not
-	// be treated as suspicious.
+	// DeviceNone means no usable KnownDeviceCookie entry for the account was
+	// presented. It is the zero value. That covers no cookie, a cookie that
+	// remembers only other accounts (a new account on a shared device), and an
+	// expired entry: expiry is routine for returning users and says nothing
+	// about the client, so none of these may be treated as suspicious.
 	DeviceNone DeviceState = iota
-	// DeviceInvalid means a cookie was presented but is forged, malformed, or
-	// bound to a different identifier.
+	// DeviceInvalid means the cookie is forged or malformed, or its entry for
+	// the account fails verification.
 	DeviceInvalid
-	// DeviceKnown means a valid, unexpired cookie, bound to the identifier of
-	// this attempt.
+	// DeviceKnown means a valid, unexpired entry for the identifier of this
+	// attempt.
 	DeviceKnown
 )
 

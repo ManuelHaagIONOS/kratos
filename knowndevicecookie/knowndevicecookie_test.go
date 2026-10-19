@@ -19,7 +19,12 @@ import (
 	"github.com/ory/kratos/knowndevicecookie"
 )
 
-const alice = "alice@example.com"
+const (
+	alice = "alice@example.com"
+	bob   = "bob@example.com"
+	carol = "carol@example.com"
+	dave  = "dave@example.com"
+)
 
 func newCodec(t *testing.T, cfg knowndevicecookie.Config, secrets ...string) *knowndevicecookie.Codec {
 	t.Helper()
@@ -32,10 +37,12 @@ func newCodec(t *testing.T, cfg knowndevicecookie.Config, secrets ...string) *kn
 	return c
 }
 
-func issue(t *testing.T, c *knowndevicecookie.Codec, identifier string) *http.Cookie {
+// issue logs identifier in on a device that presents prev, and returns the
+// cookie to send next.
+func issue(t *testing.T, c *knowndevicecookie.Codec, identifier string, prev ...*http.Cookie) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()
-	require.NoError(t, c.Issue(w, identifier))
+	require.NoError(t, c.Issue(w, request(prev...), identifier))
 	cookies := w.Result().Cookies()
 	require.Len(t, cookies, 1)
 	return cookies[0]
@@ -54,6 +61,8 @@ func withValue(c *http.Cookie, v string) *http.Cookie {
 	cp.Value = v
 	return &cp
 }
+
+func entries(c *http.Cookie) []string { return strings.Split(c.Value, "~") }
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -98,11 +107,30 @@ func TestIssue(t *testing.T) {
 		assert.Equal(t, alice, string(id))
 	})
 
-	t.Run("case=empty identifier is refused", func(t *testing.T) {
+	t.Run("case=empty or too long identifier is refused", func(t *testing.T) {
 		t.Parallel()
-		w := httptest.NewRecorder()
-		assert.Error(t, newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret").Issue(w, "  "))
-		assert.Empty(t, w.Result().Cookies())
+		c := newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret")
+		for _, id := range []string{"  ", strings.Repeat("a", knowndevicecookie.MaxIdentifierLength+1)} {
+			w := httptest.NewRecorder()
+			assert.Error(t, c.Issue(w, request(), id))
+			assert.Empty(t, w.Result().Cookies())
+		}
+		assert.NotNil(t, issue(t, c, strings.Repeat("a", knowndevicecookie.MaxIdentifierLength)), "the longest is fine")
+	})
+
+	t.Run("case=largest cookie fits the value limit", func(t *testing.T) {
+		t.Parallel()
+		c := newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret")
+		var ck *http.Cookie
+		for _, p := range []string{"a", "b", "c", "d"} {
+			var prev []*http.Cookie
+			if ck != nil {
+				prev = append(prev, ck)
+			}
+			ck = issue(t, c, strings.Repeat(p, knowndevicecookie.MaxIdentifierLength), prev...)
+		}
+		assert.Len(t, entries(ck), knowndevicecookie.MaxEntries)
+		assert.LessOrEqual(t, len(ck.Value), knowndevicecookie.MaxValueLength)
 	})
 }
 
@@ -124,16 +152,15 @@ func TestVerify(t *testing.T) {
 		}
 	})
 
-	t.Run("case=bound to another identifier", func(t *testing.T) {
+	t.Run("case=a cookie of other accounts is none, not invalid", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(good), "bob@example.com"))
-		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(good), ""))
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(good), bob))
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(good), ""))
 	})
 
 	t.Run("case=forged or malformed", func(t *testing.T) {
 		t.Parallel()
-		bob := issue(t, c, "bob@example.com")
-		bobParts := strings.Split(bob.Value, ".")
+		bobEntry := strings.Split(issue(t, c, bob).Value, ".")
 		parts := strings.Split(good.Value, ".")
 		swap := func(i int, v string) string {
 			p := append([]string(nil), parts...)
@@ -141,20 +168,29 @@ func TestVerify(t *testing.T) {
 			return strings.Join(p, ".")
 		}
 
-		for name, v := range map[string]string{
-			"garbage":            "garbage",
-			"empty":              "",
-			"wrong version":      swap(0, "v2"),
-			"identifier swap":    swap(1, bobParts[1]),
-			"issue time":         swap(2, "1"),
-			"issue time nan":     swap(2, "later"),
-			"mac truncated":      swap(3, parts[3][:10]),
-			"mac not base64":     swap(3, "!!!"),
-			"identifier not b64": swap(1, "!!!"),
-			"extra field":        good.Value + ".x",
+		for name, tc := range map[string]struct{ value, identifier string }{
+			"garbage":                {"garbage", alice},
+			"empty":                  {"", alice},
+			"wrong version":          {swap(0, "v2"), alice},
+			"identifier swapped":     {swap(1, bobEntry[1]), bob},
+			"issue time":             {swap(2, "1"), alice},
+			"issue time nan":         {swap(2, "later"), alice},
+			"mac truncated":          {swap(3, parts[3][:10]), alice},
+			"mac not base64":         {swap(3, "!!!"), alice},
+			"identifier not base64":  {swap(1, "!!!"), alice},
+			"extra field":            {good.Value + ".x", alice},
+			"malformed next to good": {good.Value + "~garbage", bob},
 		} {
-			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(withValue(good, v)), alice), name)
+			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(withValue(good, tc.value)), tc.identifier), name)
 		}
+	})
+
+	t.Run("case=an entry with a swapped identifier is none for the original", func(t *testing.T) {
+		t.Parallel()
+		bobEntry := strings.Split(issue(t, c, bob).Value, ".")
+		parts := strings.Split(good.Value, ".")
+		parts[1] = bobEntry[1]
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(withValue(good, strings.Join(parts, "."))), alice))
 	})
 
 	t.Run("case=signed with another secret", func(t *testing.T) {
@@ -169,6 +205,114 @@ func TestVerify(t *testing.T) {
 		replayed := withValue(good, other.Value)
 		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(replayed), alice))
 	})
+
+	t.Run("case=oversized or too many entries are rejected", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(withValue(good, strings.Repeat("a", knowndevicecookie.MaxValueLength+1))), alice))
+
+		many := strings.TrimSuffix(strings.Repeat(good.Value+"~", knowndevicecookie.MaxEntries+1), "~")
+		require.LessOrEqual(t, len(many), knowndevicecookie.MaxValueLength)
+		assert.Equal(t, defense.DeviceInvalid, c.Verify(request(withValue(good, many)), alice))
+	})
+}
+
+func TestMultipleAccounts(t *testing.T) {
+	t.Parallel()
+
+	c := newCodec(t, knowndevicecookie.Config{}, "secret-secret-secret")
+
+	t.Run("case=accounts accumulate, newest first", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, c, bob, issue(t, c, alice))
+
+		assert.Len(t, entries(ck), 2)
+		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), alice))
+		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), bob))
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(ck), carol))
+	})
+
+	t.Run("case=the oldest is evicted beyond the maximum", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, c, alice)
+		for _, id := range []string{bob, carol, dave} {
+			ck = issue(t, c, id, ck)
+		}
+
+		assert.Len(t, entries(ck), knowndevicecookie.MaxEntries)
+		assert.Equal(t, defense.DeviceNone, c.Verify(request(ck), alice), "evicted")
+		for _, id := range []string{bob, carol, dave} {
+			assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), id), id)
+		}
+	})
+
+	t.Run("case=logging in again replaces the entry", func(t *testing.T) {
+		t.Parallel()
+		ck := issue(t, c, bob, issue(t, c, alice))
+		ck = issue(t, c, "ALICE@example.com", ck)
+
+		assert.Len(t, entries(ck), 2)
+		assert.Equal(t, alice, plaintext(t, entries(ck)[0]), "moved to the front")
+		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), bob))
+	})
+
+	t.Run("case=forged and malformed entries are not carried over", func(t *testing.T) {
+		t.Parallel()
+		other := newCodec(t, knowndevicecookie.Config{}, "another-secret-key")
+		foreign := issue(t, other, bob)
+		for name, prev := range map[string]string{
+			"foreign":   foreign.Value,
+			"malformed": "garbage",
+			"oversized": strings.Repeat("a", knowndevicecookie.MaxValueLength+1),
+		} {
+			ck := issue(t, c, alice, withValue(foreign, prev))
+			assert.Len(t, entries(ck), 1, name)
+			assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), alice), name)
+		}
+	})
+
+	t.Run("case=a valid entry survives next to a bad one", func(t *testing.T) {
+		t.Parallel()
+		good := issue(t, c, alice)
+		ck := issue(t, c, bob, withValue(good, "garbage~"+good.Value))
+		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), alice))
+		assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), bob))
+	})
+
+	t.Run("case=entries keep their own lifespan", func(t *testing.T) {
+		t.Parallel()
+		const lifespan = 90 * 24 * time.Hour
+		c := newCodec(t, knowndevicecookie.Config{Lifespan: lifespan}, "secret-secret-secret")
+		synctest.Test(t, func(t *testing.T) {
+			ck := issue(t, c, alice)
+			time.Sleep(60 * 24 * time.Hour)
+			ck = issue(t, c, bob, ck)
+
+			time.Sleep(31 * 24 * time.Hour) // 91 days after alice, 31 after bob
+			assert.Equal(t, defense.DeviceNone, c.Verify(request(ck), alice), "expired, not renewed by bob's login")
+			assert.Equal(t, defense.DeviceKnown, c.Verify(request(ck), bob))
+		})
+	})
+
+	t.Run("case=expired entries are dropped when issuing", func(t *testing.T) {
+		t.Parallel()
+		const lifespan = time.Hour
+		c := newCodec(t, knowndevicecookie.Config{Lifespan: lifespan}, "secret-secret-secret")
+		synctest.Test(t, func(t *testing.T) {
+			ck := issue(t, c, alice)
+			time.Sleep(lifespan + time.Second)
+			ck = issue(t, c, bob, ck)
+			assert.Len(t, entries(ck), 1)
+		})
+	})
+}
+
+func plaintext(t *testing.T, entry string) string {
+	t.Helper()
+	parts := strings.Split(entry, ".")
+	require.Len(t, parts, 4)
+	id, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	return string(id)
 }
 
 func TestSecretRotation(t *testing.T) {
@@ -183,11 +327,12 @@ func TestSecretRotation(t *testing.T) {
 		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(oldCookie), alice))
 	})
 
-	t.Run("case=new cookies are signed with the first secret", func(t *testing.T) {
+	t.Run("case=new entries are signed with the first secret, old ones carried over", func(t *testing.T) {
 		t.Parallel()
-		fresh := issue(t, rotated, alice)
-		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(fresh), alice))
-		assert.Equal(t, defense.DeviceInvalid, oldCodec.Verify(request(fresh), alice))
+		ck := issue(t, rotated, bob, oldCookie)
+		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(ck), alice))
+		assert.Equal(t, defense.DeviceKnown, rotated.Verify(request(ck), bob))
+		assert.Equal(t, defense.DeviceInvalid, oldCodec.Verify(request(ck), bob), "signed with the new secret")
 	})
 
 	t.Run("case=old cookie is invalid once the old secret is dropped", func(t *testing.T) {
@@ -219,15 +364,6 @@ func TestExpiry(t *testing.T) {
 		})
 	})
 
-	t.Run("case=expired cookie of another identifier is none too", func(t *testing.T) {
-		t.Parallel()
-		synctest.Test(t, func(t *testing.T) {
-			ck := issue(t, c, alice)
-			time.Sleep(lifespan + time.Second)
-			assert.Equal(t, defense.DeviceNone, c.Verify(request(ck), "bob@example.com"))
-		})
-	})
-
 	t.Run("case=forged stays invalid after the lifespan", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
@@ -239,9 +375,9 @@ func TestExpiry(t *testing.T) {
 	t.Run("case=issuing again slides the lifespan", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			issue(t, c, alice)
+			first := issue(t, c, alice)
 			time.Sleep(60 * 24 * time.Hour)
-			renewed := issue(t, c, alice)
+			renewed := issue(t, c, alice, first)
 
 			time.Sleep(60 * 24 * time.Hour)
 			assert.Equal(t, defense.DeviceKnown, c.Verify(request(renewed), alice), "120 days after the first login")

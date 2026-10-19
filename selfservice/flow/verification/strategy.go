@@ -22,6 +22,15 @@ const (
 	VerificationStrategyCode VerificationStrategy = "code"
 )
 
+// DefendedStrategy marks a verification strategy that enters the defense gate: it calls
+// gate.From(ctx).Check where it is responsible and has its payload, before any
+// lookup, hashing or sending, and reports outcomes the handler cannot see with
+// gate.From(ctx).Succeeded or Failed. A strategy that does not implement it must be
+// listed as exempt, with a reason, in the coverage test of the driver package.
+type DefendedStrategy interface {
+	VerificationDefended()
+}
+
 type (
 	Strategy interface {
 		VerificationStrategyID() string

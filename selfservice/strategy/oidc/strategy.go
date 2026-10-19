@@ -8,6 +8,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"maps"
 	"net/http"
 	"net/url"
@@ -117,6 +119,8 @@ type Dependencies interface {
 	continuity.ManagementProvider
 
 	cipher.Provider
+
+	gate.Dependencies
 
 	jsonnetsecure.VMProvider
 }
@@ -506,6 +510,18 @@ func (s *Strategy) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defense: Check via the gate, before the token exchange. Only the strategy can call it, as only it knows the state
+	// is valid and the provider known. The user proves themselves to the provider, which applies its own defense; what is
+	// ours to protect is the outbound exchange, which costs a round trip and counts against our client at the provider.
+	// Anyone can reach this point by starting a login and calling the callback with a made-up code. No account is known
+	// yet, so the attempt is counted by provider (a scope, never an account) and code. The state stays valid for a short
+	// while after use, so a denied user can retry. Not a Login call, so the outcome is reported here, not by a handler.
+	g := gate.Install(s.d, w, r, defense.MethodOIDC)
+	if err := g.CheckScope(ctx, state.ProviderId, code); err != nil {
+		s.forwardError(ctx, w, r, req, s.HandleError(ctx, w, r, req, state.ProviderId, nil, oidcerr.Wrap(oidcerr.StepCallback, err)))
+		return
+	}
+
 	var claims *Claims
 	var et *identity.CredentialsOIDCEncryptedTokens
 	switch p := provider.(type) {
@@ -514,6 +530,11 @@ func (s *Strategy) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		token, err := s.exchangeCode(ctx, p, code, PKCEVerifier(state))
 		reqlog.AccumulateExternalLatency(ctx, time.Since(t0))
 		if err != nil {
+			// Only a code the provider rejects is a failure: a network error, a provider outage or a rejected client
+			// secret (invalid_client) is on us or on them, and must not count against the user.
+			if re := new(oauth2.RetrieveError); errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
+				g.Failed(ctx)
+			}
 			s.forwardError(ctx, w, r, req, s.HandleError(ctx, w, r, req, state.ProviderId, nil, oidcerr.Wrap(oidcerr.StepTokenExchange, err)))
 			return
 		}
@@ -553,6 +574,8 @@ func (s *Strategy) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		s.forwardError(ctx, w, r, req, s.HandleError(ctx, w, r, req, state.ProviderId, nil, oidcerr.Wrap(oidcerr.StepClaimsDecode, err)))
 		return
 	}
+	// The provider accepted the code and vouched for the user.
+	g.Succeeded(ctx)
 
 	span.SetAttributes(attribute.StringSlice("claims", slices.Collect(maps.Keys(claims.RawClaims))))
 

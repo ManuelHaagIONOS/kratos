@@ -4,6 +4,8 @@
 package recovery
 
 import (
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/gate"
 	"net/http"
 
 	"github.com/pkg/errors"
@@ -53,6 +55,7 @@ type (
 		config.Provider
 		ErrorHandlerProvider
 		HookExecutorProvider
+		gate.Dependencies
 	}
 	Handler struct {
 		d handlerDependencies
@@ -60,6 +63,21 @@ type (
 )
 
 func NewHandler(d handlerDependencies) *Handler { return &Handler{d: d} }
+
+// recover runs a strategy behind the defense gate. The strategy enters it with
+// Check, where it is responsible and has its payload, and reports a wrong or
+// right code itself with Failed and Succeeded, as it shows a wrong code as a
+// message and returns no error. Here only errors the client caused are reported,
+// when the strategy has not reported already.
+func (h *Handler) recover(ss Strategy, w http.ResponseWriter, r *http.Request, f *Flow) error {
+	if _, ok := ss.(DefendedStrategy); !ok {
+		return ss.Recover(w, r, f)
+	}
+	g := gate.Install(h.d, w, r, defense.MethodRecovery)
+	err := ss.Recover(w, r, f)
+	g.Done(r.Context(), false, err)
+	return err
+}
 
 func (h *Handler) RegisterPublicRoutes(public *httprouterx.RouterPublic) {
 	h.d.CSRFHandler().IgnorePath(RouteInitAPIFlow)
@@ -439,7 +457,7 @@ func (h *Handler) updateRecoveryFlow(w http.ResponseWriter, r *http.Request) {
 	var g node.UiNodeGroup
 	var found bool
 	for _, ss := range h.d.AllRecoveryStrategies() {
-		err := ss.Recover(w, r, f)
+		err := h.recover(ss, w, r, f)
 		if errors.Is(err, flow.ErrStrategyNotResponsible) {
 			continue
 		} else if errors.Is(err, flow.ErrCompletedByStrategy) {

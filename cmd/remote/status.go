@@ -38,32 +38,34 @@ func (s *statusState) Interface() interface{} {
 	return s
 }
 
-var statusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Print the alive and readiness status of a Ory Kratos instance",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := cliclient.NewClient(cmd)
-		if err != nil {
-			return err
-		}
+func newStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Print the alive and readiness status of a Ory Kratos instance",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := cliclient.NewClient(cmd)
+			if err != nil {
+				return err
+			}
 
-		state := &statusState{}
-		defer cmdx.PrintRow(cmd, state)
+			state := &statusState{}
+			defer cmdx.PrintRow(cmd, state)
 
-		alive, _, err := c.MetadataAPI.IsAlive(cmd.Context()).Execute()
-		if err != nil {
-			return err
-		}
+			alive, _, err := c.MetadataAPI.IsAlive(cmd.Context()).Execute()
+			if err != nil {
+				return err
+			}
 
-		state.Alive = alive.Status == "ok"
+			state.Alive = alive.Status == "ok"
 
-		ready, _, err := c.MetadataAPI.IsReady(cmd.Context()).Execute()
-		if err != nil {
-			return err
-		}
+			ready, _, err := c.MetadataAPI.IsReady(cmd.Context()).Execute()
+			if err != nil {
+				return err
+			}
 
-		state.Ready = ready.Status == "ok"
-		return nil
-	},
+			state.Ready = ready.Status == "ok"
+			return nil
+		},
+	}
 }

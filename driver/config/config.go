@@ -229,7 +229,9 @@ const (
 	Argon2DefaultDedicatedMemory        = 1 * bytesize.GB
 	BcryptDefaultCost            uint32 = 12
 
-	DefenseDefaultMaxDelay = 2 * time.Second
+	// DefenseDefaultMaxDelay is a safety net against a faulty defense, not
+	// policy: the defense decides how long to delay.
+	DefenseDefaultMaxDelay = 30 * time.Second
 )
 
 // DefaultSessionCookieName returns the default cookie name for the kratos session.

@@ -2912,10 +2912,10 @@
         },
         "max_delay": {
           "title": "Maximum defense delay",
-          "description": "The upper bound for the delay an attack defense may impose on a single login attempt. Longer delays requested by the defense are shortened to this value.",
+          "description": "A safety net against a faulty attack defense: the upper bound for the delay it may impose on a single login attempt. The defense decides its own delays; longer ones are shortened to this value.",
           "type": "string",
           "pattern": "^([0-9]+(ns|us|ms|s|m|h))+$",
-          "default": "2s"
+          "default": "30s"
         }
       },
       "additionalProperties": false

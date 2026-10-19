@@ -110,8 +110,8 @@ const (
 type Decision struct {
 	Verdict Verdict
 	// Delay, if positive, is slept before the attempt proceeds (Allow) or
-	// before the rejection is returned (Deny). It is capped at the configured
-	// defense.max_delay.
+	// before the rejection is returned (Deny). The defense decides the policy;
+	// defense.max_delay (default 30s) only guards against a faulty one.
 	Delay time.Duration
 	// RetryAfter, if positive on Deny, is reported to the client.
 	RetryAfter time.Duration

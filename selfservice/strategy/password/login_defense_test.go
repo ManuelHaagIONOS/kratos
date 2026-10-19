@@ -106,6 +106,7 @@ func TestLoginDefense(t *testing.T) {
 	}
 
 	t.Run("case=default registry uses the no-op defense", func(t *testing.T) {
+		t.Parallel()
 		_, fresh := pkg.NewFastRegistryWithMocks(t)
 		assert.IsType(t, defense.Noop{}, fresh.Defense())
 	})
@@ -119,7 +120,7 @@ func TestLoginDefense(t *testing.T) {
 		before, after := rec.calls[0].Attempt, rec.calls[1].Attempt
 		assert.Equal(t, "password", before.Method)
 		assert.Equal(t, identifier, before.Identifier)
-		assert.Equal(t, [16]byte{}, [16]byte(before.IdentityID), "identity is unknown before lookup")
+		assert.Equal(t, uuid.Nil, before.IdentityID, "identity is unknown before lookup")
 		assert.Equal(t, id.ID, after.IdentityID)
 	})
 
@@ -136,7 +137,7 @@ func TestLoginDefense(t *testing.T) {
 		_, res := login(t, x.NewUUID().String(), pwd)
 		assert.Equal(t, http.StatusBadRequest, res.StatusCode)
 		assert.Equal(t, []string{"BeforeAttempt", "AfterFailure"}, rec.names())
-		assert.Equal(t, [16]byte{}, [16]byte(rec.calls[1].Attempt.IdentityID))
+		assert.Equal(t, uuid.Nil, rec.calls[1].Attempt.IdentityID)
 	})
 
 	t.Run("case=deny stops before lookup and hashing and reports 429", func(t *testing.T) {
@@ -148,12 +149,14 @@ func TestLoginDefense(t *testing.T) {
 		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
 	})
 
-	t.Run("case=BeforeAttempt error fails closed", func(t *testing.T) {
+	t.Run("case=BeforeAttempt error fails open", func(t *testing.T) {
 		rec.reset()
 		rec.err = errors.New("valkey is down")
+		// Any decision returned alongside the error is ignored.
+		rec.decision = defense.Decision{Verdict: defense.Deny, Delay: time.Hour}
 		_, res := login(t, identifier, pwd)
-		assert.Equal(t, http.StatusInternalServerError, res.StatusCode)
-		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
+		assert.Equal(t, http.StatusOK, res.StatusCode)
+		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, rec.names())
 	})
 
 	t.Run("case=deny reports Retry-After rounded up to whole seconds", func(t *testing.T) {
@@ -192,7 +195,17 @@ func TestLoginDefense(t *testing.T) {
 		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
 	})
 
-	t.Run("case=undecodable credentials call AfterFailure", func(t *testing.T) {
+	// The cap itself is tested with synctest in defense.TestDecisionWait; here
+	// only the configuration wiring.
+	t.Run("case=max delay is configurable", func(t *testing.T) {
+		t.Parallel()
+		_, fresh := pkg.NewFastRegistryWithMocks(t)
+		assert.Equal(t, config.DefenseDefaultMaxDelay, fresh.Config().DefenseMaxDelay(t.Context()))
+		require.NoError(t, fresh.Config().Set(t.Context(), config.ViperKeyDefenseMaxDelay, "10ms"))
+		assert.Equal(t, 10*time.Millisecond, fresh.Config().DefenseMaxDelay(t.Context()))
+	})
+
+	t.Run("case=undecodable credentials are reported to neither After method", func(t *testing.T) {
 		rec.reset()
 		broken, iid := x.NewUUID().String(), x.NewUUID()
 		require.NoError(t, reg.PrivilegedIdentityPool().CreateIdentity(t.Context(), &identity.Identity{
@@ -208,8 +221,7 @@ func TestLoginDefense(t *testing.T) {
 		}))
 		_, res := login(t, broken, pwd)
 		assert.Equal(t, http.StatusInternalServerError, res.StatusCode)
-		assert.Equal(t, []string{"BeforeAttempt", "AfterFailure"}, rec.names())
-		assert.Equal(t, iid, rec.calls[1].Attempt.IdentityID)
+		assert.Equal(t, []string{"BeforeAttempt"}, rec.names())
 	})
 
 	t.Run("case=rejections before the defense make no calls", func(t *testing.T) {

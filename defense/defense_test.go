@@ -16,6 +16,8 @@ import (
 )
 
 func TestNoop(t *testing.T) {
+	t.Parallel()
+
 	var d defense.Defense = defense.Noop{}
 	a := defense.Attempt{Method: "password", Identifier: "someone"}
 
@@ -32,7 +34,10 @@ func TestNoop(t *testing.T) {
 }
 
 func TestWait(t *testing.T) {
+	t.Parallel()
+
 	t.Run("case=waits for the full duration", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
 			require.NoError(t, defense.Wait(t.Context(), 5*time.Minute))
@@ -41,6 +46,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("case=non-positive duration returns at once", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
 			require.NoError(t, defense.Wait(t.Context(), 0))
@@ -50,6 +56,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("case=context cancellation ends the wait early", func(t *testing.T) {
+		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			time.AfterFunc(time.Second, cancel)
@@ -58,4 +65,26 @@ func TestWait(t *testing.T) {
 			assert.Equal(t, time.Second, time.Since(start))
 		})
 	})
+}
+
+func TestDecisionWait(t *testing.T) {
+	for name, tc := range map[string]struct {
+		delay, max, want time.Duration
+	}{
+		"below cap": {delay: time.Second, max: 2 * time.Second, want: time.Second},
+		"at cap":    {delay: 2 * time.Second, max: 2 * time.Second, want: 2 * time.Second},
+		"above cap": {delay: time.Hour, max: 2 * time.Second, want: 2 * time.Second},
+		"zero cap":  {delay: time.Hour, max: 0, want: 0},
+		"no delay":  {delay: 0, max: 2 * time.Second, want: 0},
+		"negative":  {delay: -time.Second, max: 2 * time.Second, want: 0},
+	} {
+		t.Run("case="+name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				require.NoError(t, defense.Decision{Delay: tc.delay}.Wait(t.Context(), tc.max))
+				assert.Equal(t, tc.want, time.Since(start))
+			})
+		})
+	}
 }

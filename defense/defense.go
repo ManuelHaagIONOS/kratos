@@ -46,7 +46,8 @@ const (
 type Decision struct {
 	Verdict Verdict
 	// Delay, if positive, is slept before the attempt proceeds (Allow) or
-	// before the rejection is returned (Deny).
+	// before the rejection is returned (Deny). It is capped at the configured
+	// defense.max_delay.
 	Delay time.Duration
 	// RetryAfter, if positive on Deny, is reported to the client.
 	RetryAfter time.Duration
@@ -57,12 +58,14 @@ type Decision struct {
 // Defense is called around credential checks.
 type Defense interface {
 	// BeforeAttempt is called before database lookup and password hashing.
-	// An error fails closed: the attempt is rejected.
+	// An error fails open: it is logged and the attempt is allowed without delay.
 	BeforeAttempt(ctx context.Context, a Attempt) (Decision, error)
 	// AfterSuccess is called after the credential was verified.
 	AfterSuccess(ctx context.Context, a Attempt)
-	// AfterFailure is called after the credential check failed, including when
-	// the identifier matched no identity.
+	// AfterFailure is called after the credential check failed because the
+	// credential was wrong, including when the identifier matched no identity.
+	// Server-side faults (corrupt records, misconfiguration) are reported to
+	// neither After method, as they say nothing about the client.
 	AfterFailure(ctx context.Context, a Attempt)
 }
 
@@ -79,6 +82,12 @@ var _ Defense = Noop{}
 func (Noop) BeforeAttempt(context.Context, Attempt) (Decision, error) { return Decision{}, nil }
 func (Noop) AfterSuccess(context.Context, Attempt)                    {}
 func (Noop) AfterFailure(context.Context, Attempt)                    {}
+
+// Wait sleeps for the decision's Delay, capped at maxDelay. See the package
+// level Wait for the semantics.
+func (d Decision) Wait(ctx context.Context, maxDelay time.Duration) error {
+	return Wait(ctx, min(d.Delay, maxDelay))
+}
 
 // Wait sleeps for d, or until ctx is done, whichever comes first. It returns
 // ctx.Err() if the context ended the wait. A non-positive d returns at once.

@@ -89,6 +89,7 @@ type RegistryDefault struct {
 	injectedSelfserviceHooks map[string]NewHookFn
 	extraHandlerFactories    []NewHandler
 	extraHandlers            []x.Handler
+	defense                  defense.Defense
 	slOptions                *servicelocatorx.Options
 
 	nosurf         nosurf.Handler
@@ -123,7 +124,6 @@ type RegistryDefault struct {
 
 	passwordHasher    initOnce[hash.Hasher]
 	extraHashers      map[string]NewHasherFn
-	defense           defense.Defense
 	passwordValidator initOnce[password.Validator]
 
 	crypter initOnce[cipher.Cipher]

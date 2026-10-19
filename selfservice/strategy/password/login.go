@@ -88,10 +88,15 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 	dec, err := s.d.Defense().BeforeAttempt(ctx, attempt)
 	if err != nil {
-		s.d.Logger().WithError(err).Error("Defense.BeforeAttempt failed, rejecting login attempt.")
-		return nil, s.handleLoginError(r, f, p, errors.WithStack(herodot.ErrInternalServerError().WithReason("The login attempt could not be evaluated.")))
+		// Fail open: an unavailable defense (e.g. its backing store) must not lock out all users.
+		s.d.Logger().WithError(err).Error("Defense.BeforeAttempt failed, allowing login attempt.")
+		dec = defense.Decision{}
 	}
-	if err := defense.Wait(ctx, dec.Delay); err != nil {
+	if err := dec.Wait(ctx, s.d.Config().DefenseMaxDelay(ctx)); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// The client went away, there is nobody left to answer.
+			return nil, errors.WithStack(err)
+		}
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(err))
 	}
 	if dec.Verdict == defense.Deny {
@@ -119,13 +124,15 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))
 	if err := d.Decode(&o); err != nil {
-		s.d.Defense().AfterFailure(ctx, attempt)
+		// A server-side fault, not a failed guess: not reported to the defense,
+		// so that broken records cannot lock out their owner.
 		return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().WithReason("The password credentials could not be decoded properly").WithDebug(err.Error()).WithWrap(err)), i.ID)
 	}
 
 	if o.ShouldUsePasswordMigrationHook() {
 		pwHook := s.d.Config().PasswordMigrationHook(ctx)
 		if !pwHook.Enabled {
+			// Operator error and no verdict on the credentials: neither success nor failure is reported.
 			return nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrMisconfiguration().WithReasonf("Password migration hook is not enabled but password migration is requested.")), i.ID)
 		}
 

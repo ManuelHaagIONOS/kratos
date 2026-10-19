@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"sync"
 	"testing"
@@ -93,7 +94,7 @@ func TestLoginDefense(t *testing.T) {
 	apiClient := testhelpers.NewDebugClient(t)
 
 	identifier, pwd := x.NewUUID().String(), "password"
-	id := createIdentity(t.Context(), reg, t, identifier, pwd)
+	createIdentity(t.Context(), reg, t, identifier, pwd)
 
 	loginRaw := func(t *testing.T, client *http.Client, payload map[string]string) (string, *http.Response) {
 		f := testhelpers.InitializeLoginFlowViaAPICtx(t.Context(), t, client, publicTS, false)
@@ -118,10 +119,12 @@ func TestLoginDefense(t *testing.T) {
 		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, rec.names())
 
 		before, after := rec.calls[0].Attempt, rec.calls[1].Attempt
-		assert.Equal(t, "password", before.Method)
-		assert.Equal(t, identifier, before.Identifier)
-		assert.Equal(t, uuid.Nil, before.IdentityID, "identity is unknown before lookup")
-		assert.Equal(t, id.ID, after.IdentityID)
+		assert.Equal(t, defense.MethodPassword, before.Method)
+		fp := defense.NewFingerprinter(reg.Config().DefenseFingerprintSecret(t.Context()))
+		assert.Equal(t, fp.Identifier(identifier), before.IdentifierDigest)
+		assert.Equal(t, fp.Credential(pwd), before.CredentialDigest)
+		assert.True(t, before.IP.IsValid() || before.IP == netip.Addr{})
+		assert.Equal(t, before, after, "all calls of one attempt see the same Attempt")
 	})
 
 	t.Run("case=wrong password calls BeforeAttempt then AfterFailure", func(t *testing.T) {
@@ -129,7 +132,7 @@ func TestLoginDefense(t *testing.T) {
 		_, res := login(t, identifier, "wrong-password")
 		assert.Equal(t, http.StatusBadRequest, res.StatusCode)
 		assert.Equal(t, []string{"BeforeAttempt", "AfterFailure"}, rec.names())
-		assert.Equal(t, id.ID, rec.calls[1].Attempt.IdentityID)
+		assert.Equal(t, rec.calls[0].Attempt, rec.calls[1].Attempt)
 	})
 
 	t.Run("case=unknown identifier calls BeforeAttempt then AfterFailure", func(t *testing.T) {
@@ -137,7 +140,7 @@ func TestLoginDefense(t *testing.T) {
 		_, res := login(t, x.NewUUID().String(), pwd)
 		assert.Equal(t, http.StatusBadRequest, res.StatusCode)
 		assert.Equal(t, []string{"BeforeAttempt", "AfterFailure"}, rec.names())
-		assert.Equal(t, uuid.Nil, rec.calls[1].Attempt.IdentityID)
+		assert.Equal(t, rec.calls[0].Attempt, rec.calls[1].Attempt, "unknown accounts look the same as known ones")
 	})
 
 	t.Run("case=deny stops before lookup and hashing and reports 429", func(t *testing.T) {

@@ -9,27 +9,60 @@ package defense
 
 import (
 	"context"
-	"net/http"
+	"net/netip"
 	"time"
-
-	"github.com/gofrs/uuid"
 )
 
-// Attempt describes a single credential check.
+// Digest is a 256 bit keyed digest. Kratos computes it, the key never leaves
+// Kratos. Implementations may truncate it.
+type Digest [32]byte
+
+// IsZero reports whether the digest is unset.
+func (d Digest) IsZero() bool { return d == Digest{} }
+
+// MethodID identifies the credential method of an Attempt. It is a small
+// enum, so it can be used as an array index or metric label without allocating.
+type MethodID uint8
+
+const (
+	// MethodUnknown is the zero value and is never passed by Kratos.
+	MethodUnknown MethodID = iota
+	MethodPassword
+	MethodCode
+	MethodLookupSecret
+	MethodAppPassword
+	// NumMethods is the number of defined IDs, including MethodUnknown.
+	NumMethods
+)
+
+var methodNames = [NumMethods]string{"unknown", "password", "code", "lookup_secret", "app_password"}
+
+// String returns the stable name of the method, for logs and metrics.
+func (m MethodID) String() string {
+	if m >= NumMethods {
+		return methodNames[MethodUnknown]
+	}
+	return methodNames[m]
+}
+
+// Attempt describes a single credential check. It carries no plaintext
+// identifier or credential, and no request: everything an implementation may
+// act on is listed here, and is the same in all three calls.
 type Attempt struct {
-	// Method is the credential method being attempted, e.g. "password".
-	Method string
-	// Identifier is the identifier as supplied by the client, before any
-	// normalization or lookup. It is untrusted input.
-	Identifier string
-	// IdentityID is the matched identity. It is the zero UUID in BeforeAttempt
-	// and when the identifier did not match any identity.
-	IdentityID uuid.UUID
-	// IP is the client IP address as determined by Kratos.
-	IP string
-	// Request is the underlying HTTP request. Implementations must not read
-	// its body.
-	Request *http.Request
+	// Method is the credential method being attempted.
+	Method MethodID
+	// IdentifierDigest identifies the account being attacked: a keyed digest of
+	// the canonicalized identifier as supplied by the client. It is derived
+	// from the input alone, so it is identical for existing and non-existing
+	// accounts and available before any database lookup.
+	IdentifierDigest Digest
+	// CredentialDigest is a keyed digest of the submitted secret, for
+	// detecting one secret tried across many accounts (credential stuffing).
+	// It is zero for methods without a client-supplied secret.
+	CredentialDigest Digest
+	// IP is the client IP address as determined by Kratos, with IPv4-mapped
+	// IPv6 addresses unmapped. It is the zero Addr if it could not be determined.
+	IP netip.Addr
 }
 
 // Verdict is the kind of decision taken in BeforeAttempt.

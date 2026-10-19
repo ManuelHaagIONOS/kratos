@@ -80,11 +80,12 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 
 	identifier := cmp.Or(p.Identifier, p.LegacyIdentifier)
 
+	fp := defense.NewFingerprinter(s.d.Config().DefenseFingerprintSecret(ctx))
 	attempt := defense.Attempt{
-		Method:     string(s.ID()),
-		Identifier: identifier,
-		IP:         httpx.ClientIP(r),
-		Request:    r,
+		Method:           defense.MethodPassword,
+		IdentifierDigest: fp.Identifier(identifier),
+		CredentialDigest: fp.Credential(p.Password),
+		IP:               defense.ParseIP(httpx.ClientIP(r)),
 	}
 	dec, err := s.d.Defense().BeforeAttempt(ctx, attempt)
 	if err != nil {
@@ -118,8 +119,6 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 		time.Sleep(x.RandomDelay(s.d.Config().HasherArgon2(ctx).ExpectedDuration, s.d.Config().HasherArgon2(ctx).ExpectedDeviation))
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(schema.NewInvalidCredentialsError()))
 	}
-
-	attempt.IdentityID = i.ID
 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))

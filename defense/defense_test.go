@@ -5,6 +5,7 @@ package defense_test
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,7 +20,7 @@ func TestNoop(t *testing.T) {
 	t.Parallel()
 
 	var d defense.Defense = defense.Noop{}
-	a := defense.Attempt{Method: "password", Identifier: "someone"}
+	a := defense.Attempt{Method: defense.MethodPassword, IP: netip.MustParseAddr("192.0.2.1")}
 
 	dec, err := d.BeforeAttempt(t.Context(), a)
 	require.NoError(t, err)

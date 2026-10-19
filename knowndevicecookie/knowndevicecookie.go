@@ -59,8 +59,8 @@ const (
 	// canonicalization, that an entry can be issued for.
 	MaxIdentifierLength = 254
 	// MaxValueLength bounds the cookie value that is looked at. An entry is
-	// fixed in size, at most 89 bytes; MaxEntries of them and their separators
-	// take 269, so this leaves room.
+	// fixed in size, at most 110 bytes; MaxEntries of them and their separators
+	// take 332, so this leaves room.
 	MaxValueLength = 512
 
 	// version prefixes the wire format of an entry, which is
@@ -72,9 +72,6 @@ const (
 	// kdfPseudonymInfo that of the pseudonym key.
 	kdfInfo          = "ory/kratos/knowndevicecookie/v1"
 	kdfPseudonymInfo = "ory/kratos/knowndevicecookie/identifier/v1"
-	// pseudonymLength is the length in bytes of a pseudonym: 128 bits of a
-	// keyed hash.
-	pseudonymLength = 16
 )
 
 // Config configures a Codec.
@@ -264,7 +261,7 @@ func parseEntry(raw string) (e entry, ok bool) {
 		return entry{}, false
 	}
 	pseudonym, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || len(pseudonym) != pseudonymLength {
+	if err != nil || len(pseudonym) != sha256.Size {
 		return entry{}, false
 	}
 	iat, err := strconv.ParseInt(parts[2], 10, 64)
@@ -297,13 +294,13 @@ func (c *Codec) verifies(e entry) (key int, ok bool) {
 // pseudonym returns the pseudonym of the canonicalized identifier under the
 // key of the secret at index key: a keyed hash, so it reveals no address and
 // cannot be checked against a guess without the secret. It is domain separated
-// from every other use of the secret, and truncated to 128 bits.
+// from every other use of the secret. It is the whole HMAC-SHA256.
 func (c *Codec) pseudonym(key int, id string) []byte {
 	h := hmac.New(sha256.New, c.keys[key].pseudonym)
 	h.Write([]byte(kdfPseudonymInfo))
 	h.Write([]byte{0})
 	h.Write([]byte(id))
-	return h.Sum(nil)[:pseudonymLength]
+	return h.Sum(nil)
 }
 
 // mac covers the cookie name, the issue time and the pseudonym. The pseudonym

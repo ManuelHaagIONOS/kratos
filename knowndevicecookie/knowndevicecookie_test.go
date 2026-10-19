@@ -122,8 +122,8 @@ func TestIssue(t *testing.T) {
 		require.Len(t, parts, 4)
 		pseudonym, err := base64.RawURLEncoding.DecodeString(parts[1])
 		require.NoError(t, err)
-		assert.Len(t, pseudonym, 16, "128 bits")
-		assert.LessOrEqual(t, len(ck.Value), 89, "an entry has a fixed size")
+		assert.Len(t, pseudonym, sha256.Size, "the whole HMAC-SHA256")
+		assert.LessOrEqual(t, len(ck.Value), 110, "an entry has a fixed size")
 	})
 
 	t.Run("case=empty or too long identifier is refused", func(t *testing.T) {
@@ -403,7 +403,7 @@ func TestPseudonym(t *testing.T) {
 	t.Run("case=a pseudonym of the wrong length is malformed", func(t *testing.T) {
 		t.Parallel()
 		parts := strings.Split(issue(t, c, alice).Value, ".")
-		for _, p := range []string{"", "AAAA", base64.RawURLEncoding.EncodeToString(make([]byte, 17))} {
+		for _, p := range []string{"", "AAAA", base64.RawURLEncoding.EncodeToString(make([]byte, 16)), base64.RawURLEncoding.EncodeToString(make([]byte, 33))} {
 			parts[1] = p
 			assert.Equal(t, defense.DeviceInvalid, c.Verify(request(&http.Cookie{Name: knowndevicecookie.DefaultName, Value: strings.Join(parts, ".")}), alice), p)
 		}

@@ -19,6 +19,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ory/herodot"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/schema"
@@ -32,6 +33,7 @@ import (
 	"github.com/ory/kratos/ui/node"
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/decoderx"
+	"github.com/ory/x/httpx"
 )
 
 var _ login.AAL1FormHydrator = new(Strategy)
@@ -75,11 +77,43 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 	}
 
 	identifier := cmp.Or(p.Identifier, p.LegacyIdentifier)
+
+	attempt := defense.Attempt{
+		Method:     string(s.ID()),
+		Identifier: identifier,
+		IP:         httpx.ClientIP(r),
+		Request:    r,
+	}
+	dec, err := s.d.Defense().BeforeAttempt(ctx, attempt)
+	if err != nil {
+		s.d.Logger().WithError(err).Error("Defense.BeforeAttempt failed, rejecting login attempt.")
+		return nil, s.handleLoginError(r, f, p, errors.WithStack(herodot.ErrInternalServerError().WithReason("The login attempt could not be evaluated.")))
+	}
+	if dec.Delay > 0 {
+		select {
+		case <-time.After(dec.Delay):
+		case <-ctx.Done():
+			return nil, s.handleLoginError(r, f, p, errors.WithStack(ctx.Err()))
+		}
+	}
+	if dec.Verdict == defense.Deny {
+		s.d.Logger().WithField("reason", dec.Reason).Info("Login attempt denied by defense.")
+		return nil, s.handleLoginError(r, f, p, errors.WithStack(&herodot.DefaultError{
+			StatusField: http.StatusText(http.StatusTooManyRequests),
+			ErrorField:  "Too Many Requests",
+			CodeField:   http.StatusTooManyRequests,
+			ReasonField: "Too many login attempts. Please try again later.",
+		}))
+	}
+
 	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), identifier)
 	if err != nil {
+		s.d.Defense().AfterFailure(ctx, attempt)
 		time.Sleep(x.RandomDelay(s.d.Config().HasherArgon2(ctx).ExpectedDuration, s.d.Config().HasherArgon2(ctx).ExpectedDeviation))
 		return nil, s.handleLoginError(r, f, p, errors.WithStack(schema.NewInvalidCredentialsError()))
 	}
+
+	attempt.IdentityID = i.ID
 
 	var o identity.CredentialsPassword
 	d := json.NewDecoder(bytes.NewBuffer(c.Config))
@@ -100,16 +134,20 @@ func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, 
 			Identity:   i,
 		})
 		if err != nil {
+			s.d.Defense().AfterFailure(ctx, attempt)
 			return nil, s.handleLoginError(r, f, p, x.WrapWithIdentityIDError(err, i.ID))
 		}
+		s.d.Defense().AfterSuccess(ctx, attempt)
 
 		if err := s.migratePasswordHash(ctx, i.ID, []byte(p.Password)); err != nil {
 			return nil, s.handleLoginError(r, f, p, x.WrapWithIdentityIDError(err, i.ID))
 		}
 	} else {
 		if err := hash.Compare(ctx, []byte(p.Password), []byte(o.HashedPassword)); err != nil {
+			s.d.Defense().AfterFailure(ctx, attempt)
 			return nil, s.handleLoginError(r, f, p, errors.WithStack(x.WrapWithIdentityIDError(schema.NewInvalidCredentialsError(), i.ID)))
 		}
+		s.d.Defense().AfterSuccess(ctx, attempt)
 
 		if !s.d.Hasher(ctx).Understands([]byte(o.HashedPassword)) {
 			if err := s.migratePasswordHash(ctx, i.ID, []byte(p.Password)); err != nil {

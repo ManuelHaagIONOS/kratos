@@ -14,6 +14,7 @@ import (
 	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/continuity"
 	"github.com/ory/kratos/courier"
+	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/hash"
 	"github.com/ory/kratos/identity"
@@ -84,6 +85,8 @@ type Registry interface {
 	continuity.PersistenceProvider
 
 	cipher.Provider
+
+	defense.Provider
 
 	courier.Provider
 
@@ -185,6 +188,7 @@ type options struct {
 	replacementStrategies         []NewStrategy
 	extraHooks                    map[string]NewHookFn
 	extraHashers                  map[string]NewHasherFn
+	defense                       defense.Defense
 	extraHandlers                 []NewHandler
 	disableMigrationLogging       bool
 	jsonnetPool                   jsonnetsecure.Pool
@@ -263,6 +267,14 @@ type NewHasherFn func(reg Registry) hash.Hasher
 func WithExtraHashers(hashers map[string]NewHasherFn) RegistryOption {
 	return func(o *options) {
 		o.extraHashers = hashers
+	}
+}
+
+// WithDefense injects the attack Defense used around credential checks. The
+// default is defense.Noop.
+func WithDefense(d defense.Defense) RegistryOption {
+	return func(o *options) {
+		o.defense = d
 	}
 }
 

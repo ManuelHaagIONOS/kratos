@@ -73,3 +73,12 @@ func TestMethodID(t *testing.T) {
 		assert.NotEmpty(t, m.String())
 	}
 }
+
+func TestDeviceState(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, defense.DeviceNone, defense.Attempt{}.Device, "absent cookie is the zero value")
+	assert.Equal(t, "none", defense.DeviceNone.String())
+	assert.Equal(t, "invalid", defense.DeviceInvalid.String())
+	assert.Equal(t, "known", defense.DeviceKnown.String())
+	assert.Equal(t, "invalid", defense.DeviceState(99).String())
+}

@@ -45,6 +45,30 @@ func (m MethodID) String() string {
 	return methodNames[m]
 }
 
+// DeviceState is Kratos' verdict on the device cookie of an attempt. Kratos
+// validates the cookie, the implementation never sees it nor the key.
+type DeviceState uint8
+
+const (
+	// DeviceNone means no device cookie was presented. It is the zero value.
+	DeviceNone DeviceState = iota
+	// DeviceInvalid means a cookie was presented but is forged, malformed,
+	// expired, or bound to a different identifier.
+	DeviceInvalid
+	// DeviceKnown means a valid cookie, bound to the identifier of this attempt.
+	DeviceKnown
+)
+
+var deviceStateNames = [...]string{"none", "invalid", "known"}
+
+// String returns the stable name of the state, for logs and metrics.
+func (d DeviceState) String() string {
+	if int(d) >= len(deviceStateNames) {
+		return "invalid"
+	}
+	return deviceStateNames[d]
+}
+
 // Attempt describes a single credential check. It carries no plaintext
 // identifier or credential, and no request: everything an implementation may
 // act on is listed here, and is the same in all three calls.
@@ -60,6 +84,9 @@ type Attempt struct {
 	// detecting one secret tried across many accounts (credential stuffing).
 	// It is zero for methods without a client-supplied secret.
 	CredentialDigest Digest
+	// Device is the verdict on the device cookie. It is DeviceNone until
+	// Kratos issues and validates device cookies.
+	Device DeviceState
 	// IP is the client IP address as determined by Kratos, with IPv4-mapped
 	// IPv6 addresses unmapped. It is the zero Addr if it could not be determined.
 	IP netip.Addr

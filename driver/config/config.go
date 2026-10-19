@@ -231,7 +231,7 @@ const (
 
 	// DefenseDefaultMaxDelay is a safety net against a faulty defense, not
 	// policy: the defense decides how long to delay.
-	DefenseDefaultMaxDelay = 30 * time.Second
+	DefenseDefaultMaxDelay = 10 * time.Second
 )
 
 // DefaultSessionCookieName returns the default cookie name for the kratos session.

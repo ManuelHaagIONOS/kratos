@@ -106,9 +106,7 @@ func (h *Handler) login(ss Strategy, w http.ResponseWriter, r *http.Request, f *
 	if !ok {
 		return ss.Login(w, r, f, sess)
 	}
-	g := gate.New(h.d, w, r, ds.DefenseMethod())
-	// In place, not on a copy: strategies keep the request body readable for the next one by replacing it on r.
-	*r = *r.WithContext(gate.With(r.Context(), g))
+	g := gate.Install(h.d, w, r, ds.DefenseMethod())
 	i, err := ss.Login(w, r, f, sess)
 	g.Done(r.Context(), err == nil && i != nil, err)
 	return i, err
@@ -328,8 +326,7 @@ preLoginHook:
 	for _, s := range loginStrategies {
 		if strategy, ok := s.(FastLoginStrategy); ok {
 			if ds, ok := s.(DefendedStrategy); ok {
-				// In place, as in login: strategies keep the request body readable by replacing it on r.
-				*r = *r.WithContext(gate.With(r.Context(), gate.New(h.d, w, r, ds.DefenseMethod())))
+				gate.Install(h.d, w, r, ds.DefenseMethod())
 			}
 			if err := strategy.FastLogin2FA(w, r, f, sess); errors.Is(err, flow.ErrStrategyNotResponsible) {
 				continue

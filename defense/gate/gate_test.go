@@ -157,9 +157,10 @@ func TestCheck(t *testing.T) {
 
 	t.Run("case=sleeps for the delay", func(t *testing.T) {
 		t.Parallel()
+		// Built outside the bubble: the config may keep background goroutines that must not take part in it.
+		d := newDeps(t)
+		d.defense.Answer(defense.Decision{Delay: 5 * time.Second}, nil)
 		synctest.Test(t, func(t *testing.T) {
-			d := newDeps(t)
-			d.defense.Answer(defense.Decision{Delay: 5 * time.Second}, nil)
 			start := time.Now()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword).Check(t.Context(), "alice", "secret"))
 			assert.Equal(t, 5*time.Second, time.Since(start))
@@ -168,10 +169,10 @@ func TestCheck(t *testing.T) {
 
 	t.Run("case=a delay is capped at the configured maximum", func(t *testing.T) {
 		t.Parallel()
+		d := newDeps(t)
+		require.NoError(t, d.cfg.Set(t.Context(), config.ViperKeyDefenseMaxDelay, "2s"))
+		d.defense.Answer(defense.Decision{Delay: time.Hour}, nil)
 		synctest.Test(t, func(t *testing.T) {
-			d := newDeps(t)
-			require.NoError(t, d.cfg.Set(t.Context(), config.ViperKeyDefenseMaxDelay, "2s"))
-			d.defense.Answer(defense.Decision{Delay: time.Hour}, nil)
 			start := time.Now()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword).Check(t.Context(), "alice", "secret"))
 			assert.Equal(t, 2*time.Second, time.Since(start))
@@ -180,9 +181,9 @@ func TestCheck(t *testing.T) {
 
 	t.Run("case=a cancelled context ends the wait with an error", func(t *testing.T) {
 		t.Parallel()
+		d := newDeps(t)
+		d.defense.Answer(defense.Decision{Delay: time.Minute}, nil)
 		synctest.Test(t, func(t *testing.T) {
-			d := newDeps(t)
-			d.defense.Answer(defense.Decision{Delay: time.Minute}, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			time.AfterFunc(time.Second, cancel)
 			start := time.Now()
@@ -232,4 +233,58 @@ func TestDone(t *testing.T) {
 		g.Done(t.Context(), false, schema.NewInvalidCredentialsError())
 		assert.Empty(t, d.defense.Calls())
 	})
+}
+
+func TestExplicitOutcome(t *testing.T) {
+	t.Parallel()
+
+	t.Run("case=an outcome the strategy reports is reported once, and wins over Done", func(t *testing.T) {
+		t.Parallel()
+		d := newDeps(t)
+		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodRecovery)
+		require.NoError(t, g.Check(t.Context(), "alice", "123456"))
+
+		g.Failed(t.Context())
+		g.Failed(t.Context())
+		g.Succeeded(t.Context())
+		g.Done(t.Context(), true, nil)
+		assert.Equal(t, []string{"BeforeAttempt", "AfterFailure"}, d.defense.Names())
+	})
+
+	t.Run("case=a success reported by the strategy is not repeated by Done", func(t *testing.T) {
+		t.Parallel()
+		d := newDeps(t)
+		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodRecovery)
+		require.NoError(t, g.Check(t.Context(), "alice", "123456"))
+
+		g.Succeeded(t.Context())
+		g.Done(t.Context(), false, schema.NewInvalidCredentialsError())
+		assert.Equal(t, []string{"BeforeAttempt", "AfterSuccess"}, d.defense.Names())
+	})
+
+	t.Run("case=nothing is reported for an attempt that was not let through", func(t *testing.T) {
+		t.Parallel()
+		d := newDeps(t)
+		d.defense.Answer(defense.Decision{Verdict: defense.Deny}, nil)
+		g := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodRecovery)
+		require.Error(t, g.Check(t.Context(), "alice", "123456"))
+
+		g.Failed(t.Context())
+		g.Succeeded(t.Context())
+		assert.Equal(t, []string{"BeforeAttempt"}, d.defense.Names())
+	})
+
+	t.Run("case=a nil gate ignores outcomes", func(t *testing.T) {
+		t.Parallel()
+		var g *gate.Gate
+		assert.NotPanics(t, func() { g.Failed(t.Context()); g.Succeeded(t.Context()) })
+	})
+}
+
+func TestInstall(t *testing.T) {
+	t.Parallel()
+	d := newDeps(t)
+	r := newRequest()
+	g := gate.Install(d, httptest.NewRecorder(), r, defense.MethodRecovery)
+	assert.Same(t, g, gate.From(r.Context()), "installed on the request itself, so a body swapped by a strategy stays visible to the next")
 }

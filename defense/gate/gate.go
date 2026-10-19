@@ -38,16 +38,26 @@ type Dependencies interface {
 // Gate is the entry of one request into the defense. A nil *Gate is valid and
 // lets everything through, for strategies run outside a handler.
 type Gate struct {
-	d       Dependencies
-	w       http.ResponseWriter
-	r       *http.Request
-	method  defense.MethodID
-	attempt *defense.Attempt
+	d        Dependencies
+	w        http.ResponseWriter
+	r        *http.Request
+	method   defense.MethodID
+	attempt  *defense.Attempt
+	reported bool
 }
 
 // New returns the Gate for a request that attempts method.
 func New(d Dependencies, w http.ResponseWriter, r *http.Request, method defense.MethodID) *Gate {
 	return &Gate{d: d, w: w, r: r, method: method}
+}
+
+// Install creates the Gate for a request and puts it into the context of r,
+// in place, not on a copy: strategies keep the request body readable for the
+// next one by replacing it on r.
+func Install(d Dependencies, w http.ResponseWriter, r *http.Request, method defense.MethodID) *Gate {
+	g := New(d, w, r, method)
+	*r = *r.WithContext(With(r.Context(), g))
+	return g
 }
 
 type ctxKey struct{}
@@ -114,8 +124,30 @@ func (g *Gate) Check(ctx context.Context, identifier, secret string) error {
 	return nil
 }
 
-// Done reports the outcome of a request to the defense. succeeded says that
-// the credential was verified, err is what the strategy returned.
+// Succeeded reports that the credential of the attempt was verified. A strategy
+// calls it where it alone knows the outcome: a flow that shows a wrong code as a
+// message instead of returning an error. At most one outcome is reported per
+// attempt, and none for an attempt the defense did not let through.
+func (g *Gate) Succeeded(ctx context.Context) {
+	if g == nil || g.attempt == nil || g.reported {
+		return
+	}
+	g.reported = true
+	g.d.Defense().AfterSuccess(ctx, *g.attempt)
+}
+
+// Failed reports that the credential of the attempt was wrong. See Succeeded.
+func (g *Gate) Failed(ctx context.Context) {
+	if g == nil || g.attempt == nil || g.reported {
+		return
+	}
+	g.reported = true
+	g.d.Defense().AfterFailure(ctx, *g.attempt)
+}
+
+// Done reports the outcome of a request to the defense, unless the strategy has
+// done so itself with Succeeded or Failed. succeeded says that the credential
+// was verified, err is what the strategy returned.
 //
 // Only an attempt the defense let through is reported. A failure is an error
 // the client caused, such as a wrong credential: an invalid or missing value,
@@ -123,14 +155,11 @@ func (g *Gate) Check(ctx context.Context, identifier, secret string) error {
 // Anything else, such as a step that sent a code or a redirect, is no verdict
 // on the credential and reports nothing.
 func (g *Gate) Done(ctx context.Context, succeeded bool, err error) {
-	if g == nil || g.attempt == nil {
-		return
-	}
 	switch {
 	case succeeded && err == nil:
-		g.d.Defense().AfterSuccess(ctx, *g.attempt)
+		g.Succeeded(ctx)
 	case err != nil && ClientFault(err):
-		g.d.Defense().AfterFailure(ctx, *g.attempt)
+		g.Failed(ctx)
 	}
 }
 

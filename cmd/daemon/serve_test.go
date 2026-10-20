@@ -19,7 +19,12 @@ import (
 
 	"github.com/ory/x/configx"
 	"github.com/ory/x/httpx"
+	"github.com/ory/x/logrusx"
 
+	"github.com/ory/kratos/defense"
+	"github.com/ory/kratos/defense/defensetest"
+	"github.com/ory/kratos/driver"
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/pkg"
 )
 
@@ -107,6 +112,49 @@ func TestClientInfoMiddleware(t *testing.T) {
 				got = httpx.ClientIP(r)
 			})
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// A defense keyed with a secret made up for this process would give every
+// replica, and every restart, counters of their own: serve refuses to start.
+func TestServePublicNeedsAConfiguredFingerprintSecret(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		defense defense.Defense
+		values  map[string]any
+		madeUp  bool // SecretsDefault was read before, as the cookie store does
+		ok      bool
+	}{
+		{name: "no defense needs none", madeUp: true, ok: true},
+		{name: "a defense without a secret", defense: new(defensetest.Recorder)},
+		{name: "a defense with a made-up secrets.default", defense: new(defensetest.Recorder), madeUp: true},
+		{name: "a defense with fingerprint_key", defense: new(defensetest.Recorder), madeUp: true, ok: true,
+			values: map[string]any{config.ViperKeyDefenseFingerprintKey: "fingerprint-key"}},
+		{name: "a defense with secrets.default", defense: new(defensetest.Recorder), ok: true,
+			values: map[string]any{config.ViperKeySecretsDefault: []string{"default-secret"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reg, err := driver.NewRegistryFromDSN(t.Context(), pkg.NewConfigurationWithDefaults(t, configx.WithValues(tc.values)), logrusx.New("", ""))
+			require.NoError(t, err)
+			if tc.defense != nil {
+				reg.WithDefense(tc.defense)
+			}
+			if tc.madeUp {
+				reg.Config().SecretsDefault(t.Context())
+			}
+
+			err = checkDefenseFingerprintSecret(t.Context(), reg)
+			if tc.ok {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, "defense.fingerprint_key")
+			_, err = servePublic(t.Context(), reg, &cobra.Command{})
+			assert.ErrorContains(t, err, "defense.fingerprint_key", "servePublic runs the check")
 		})
 	}
 }

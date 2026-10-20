@@ -17,6 +17,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,6 +328,9 @@ type (
 		c                  contextx.Contextualizer
 		identityMetaSchema *jsonschema.Schema
 		stdOutOrErr        io.Writer
+		// defaultSecretMadeUp is set once SecretsDefault has made up a secret
+		// for this process: from then on the provider holds it as if configured.
+		defaultSecretMadeUp atomic.Bool
 	}
 	Provider interface {
 		Config() *Config
@@ -604,6 +608,17 @@ func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
 		return []byte(k)
 	}
 	return p.SecretsDefault(ctx)[0]
+}
+
+// DefenseFingerprintSecretConfigured says whether DefenseFingerprintSecret is
+// configured, as defense.fingerprint_key or secrets.default, rather than made
+// up by SecretsDefault for this process alone.
+func (p *Config) DefenseFingerprintSecretConfigured(ctx context.Context) bool {
+	pr := p.GetProvider(ctx)
+	if pr.String(ViperKeyDefenseFingerprintKey) != "" {
+		return true
+	}
+	return len(pr.Strings(ViperKeySecretsDefault)) > 0 && !p.defaultSecretMadeUp.Load()
 }
 
 // KnownDeviceCookieMode says whether the KnownDeviceCookie is issued after login
@@ -1008,6 +1023,7 @@ func (p *Config) SecretsDefault(ctx context.Context) [][]byte {
 	if len(secrets) == 0 {
 		secrets = []string{uuid.Must(uuid.NewV4()).String()}
 		p.MustSet(ctx, ViperKeySecretsDefault, secrets)
+		p.defaultSecretMadeUp.Store(true)
 	}
 
 	result := make([][]byte, len(secrets))

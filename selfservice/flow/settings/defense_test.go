@@ -4,6 +4,7 @@
 package settings_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,19 +27,43 @@ import (
 	"github.com/ory/x/configx"
 )
 
+// denyAfter lets the first n attempts through and denies every later one. The
+// recorder sees them all.
+type denyAfter struct {
+	*defensetest.Recorder
+	n int
+}
+
+func (d denyAfter) BeforeAttempt(ctx context.Context, a defense.Attempt) (defense.Decision, error) {
+	if _, err := d.Recorder.BeforeAttempt(ctx, a); err != nil {
+		return defense.Decision{}, err
+	}
+	if len(d.Names()) > d.n {
+		return defense.Decision{Verdict: defense.Deny}, nil
+	}
+	return defense.Decision{}, nil
+}
+
 // TestSettingsDefense checks the wiring of the settings flow to the defense.
-// After any update, whatever its strategy, the verification hook messages the
-// identity's pending addresses, and counts each message as an attempt to verify
-// the address, right before it is sent: a denied one is withheld, and the
-// update stands. Every subtest has its own registry, server, identity and
-// recorder.
+// Each message a settings update has Kratos send to an address counts as an
+// attempt to verify the address. An address the update adds, chosen by the
+// client, is checked before anything is saved, so that a deny refuses the
+// update, which changes and sends nothing. After any update, whatever its
+// strategy, the verification hook messages the identity's pending addresses,
+// and checks each of the others right before it is sent: a denied one is
+// withheld, and the update stands. Every subtest has its own registry, server,
+// identity and recorder.
 func TestSettingsDefense(t *testing.T) {
 	t.Parallel()
 
 	const (
 		owner  = "owner@example.com"
+		added  = "added@example.com"
 		backup = "backup@example.com"
 	)
+
+	verifyNewAddress := configx.WithValue(config.HookStrategyKey(config.ViperKeySelfServiceSettingsAfter, settings.StrategyProfile),
+		[]map[string]any{{"hook": "verify_new_address"}})
 
 	type fixture struct {
 		reg    *driver.RegistryDefault
@@ -115,6 +140,15 @@ func TestSettingsDefense(t *testing.T) {
 		return v
 	}
 
+	// addresses is a profile update to the given addresses.
+	addresses := func(email, backupEmail string) url.Values {
+		v := url.Values{"method": {settings.StrategyProfile}, "traits.email": {email}, "traits.name": {"Owner"}}
+		if backupEmail != "" {
+			v.Set("traits.backup_email", backupEmail)
+		}
+		return v
+	}
+
 	password := url.Values{"method": {"password"}, "password": {"a-long-and-unusual-settings-password-2026"}}
 	lookupSecret := url.Values{"method": {"lookup_secret"}, "lookup_secret_regenerate": {"true"}}
 
@@ -148,7 +182,96 @@ func TestSettingsDefense(t *testing.T) {
 		return a.Status
 	}
 
-	// Concurrent updates all read the address as pending, and each messages it: this counts each of them.
+	// unchanged asserts that an identity set up without the backup address was neither saved nor messaged.
+	unchanged := func(t *testing.T, f *fixture) {
+		t.Helper()
+		i := stored(t, f)
+		assert.JSONEq(t, string(f.id.Traits), string(i.Traits))
+		require.Len(t, i.VerifiableAddresses, 1)
+		assert.Equal(t, owner, i.VerifiableAddresses[0].Value)
+		assert.Empty(t, recipients(t, f), "no message may be queued")
+	}
+
+	t.Run("case=an added address is checked once, before it is saved", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, false, nil)
+		res, body := submit(t, f, addresses(added, ""))
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+
+		require.Equal(t, []string{"BeforeAttempt"}, f.rec.Names(), "the verification hook does not check it again")
+		a := f.rec.Calls()[0].Attempt
+		assert.Equal(t, defense.MethodVerification, a.Method)
+		assert.Equal(t, digest(t, f, added), a.IdentifierDigest)
+		assert.True(t, a.CredentialDigest.IsZero())
+		assert.Equal(t, []string{added}, recipients(t, f), "let through, the message is sent: the denied cases below are not vacuous")
+	})
+
+	// A deny that came after the message was queued, or after the update was saved, fails here.
+	for name, opts := range map[string][]configx.OptionModifier{
+		"verification":       nil,
+		"verify_new_address": {verifyNewAddress},
+	} {
+		t.Run("case=a denied update changes nothing and sends nothing/hook="+name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t, false, nil, opts...)
+			f.rec.Answer(defense.Decision{Verdict: defense.Deny, RetryAfter: time.Second}, nil)
+			res, body := submit(t, f, addresses(added, ""))
+			assert.Equal(t, http.StatusTooManyRequests, res.StatusCode, "%s", body)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			assert.Equal(t, []string{"BeforeAttempt"}, f.rec.Names())
+			unchanged(t, f)
+		})
+	}
+
+	t.Run("case=a browser client is refused with 429 and Retry-After too", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, false, nil)
+		f.rec.Answer(defense.Decision{Verdict: defense.Deny, RetryAfter: time.Second}, nil)
+		browser := testhelpers.NewHTTPClientWithIdentitySessionCookie(t.Context(), t, f.reg, f.id)
+		sf := testhelpers.InitializeSettingsFlowViaBrowser(t, browser, true, f.public)
+		values := testhelpers.SDKFormFieldsToURLValues(sf.Ui.Nodes) // with the CSRF token
+		for k, v := range addresses(added, "") {
+			values[k] = v
+		}
+		body, res := testhelpers.SettingsMakeRequest(t, false, true, sf, browser, testhelpers.EncodeFormAsJSON(t, true, values))
+		assert.Equal(t, http.StatusTooManyRequests, res.StatusCode, "%s", body)
+		assert.Equal(t, "1", res.Header.Get("Retry-After"))
+		unchanged(t, f)
+	})
+
+	t.Run("case=each added address is checked, and a deny of any one changes nothing", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, false, func(r *defensetest.Recorder) defense.Defense { return denyAfter{Recorder: r, n: 1} })
+		res, body := submit(t, f, addresses(added, backup))
+		assert.Equal(t, http.StatusTooManyRequests, res.StatusCode, "%s", body)
+
+		require.Equal(t, []string{"BeforeAttempt", "BeforeAttempt"}, f.rec.Names(), "the first is let through, the second denied")
+		var digests []defense.Digest
+		for _, c := range f.rec.Calls() {
+			assert.Equal(t, defense.MethodVerification, c.Attempt.Method)
+			digests = append(digests, c.Attempt.IdentifierDigest)
+		}
+		assert.ElementsMatch(t, []defense.Digest{digest(t, f, added), digest(t, f, backup)}, digests)
+		unchanged(t, f)
+	})
+
+	t.Run("case=verify_new_address is checked on every update that adds the same address", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, false, nil, verifyNewAddress)
+		for range 2 {
+			res, body := submit(t, f, addresses(added, ""))
+			require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+		}
+
+		require.Equal(t, []string{"BeforeAttempt", "BeforeAttempt"}, f.rec.Names())
+		for _, c := range f.rec.Calls() {
+			assert.Equal(t, digest(t, f, added), c.Attempt.IdentifierDigest)
+		}
+		assert.Equal(t, []string{added, added}, recipients(t, f), "the hook saves nothing until the address is verified, so it sends on every update")
+	})
+
+	// Concurrent updates all read the address as pending, and each messages it: checked right before the message,
+	// each of them is counted.
 	for name, update := range map[string]func(*fixture) url.Values{
 		"profile":  func(f *fixture) url.Values { return profile(f, "Renamed") },
 		"password": func(*fixture) url.Values { return password },

@@ -78,6 +78,10 @@ func (e *Verifier) ExecuteSettingsPostPersistHook(w http.ResponseWriter, r *http
 		// address. The update is saved by then, so a deny withholds the message, not the update: no response writer.
 		sends := gate.New(e.r, nil, r, defense.MethodVerification)
 		return e.do(w, r.WithContext(ctx), params.Updated, params.Flow, nil, func(ctx context.Context, a *identity.VerifiableAddress) error {
+			// An address the update added was checked before the update was saved.
+			if settings.AddressChecked(ctx, *a) {
+				return nil
+			}
 			return sends.Check(ctx, a.Value, "")
 		})
 	})

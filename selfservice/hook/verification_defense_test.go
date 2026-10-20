@@ -29,10 +29,11 @@ import (
 
 // TestVerifierDefense checks that the verification hook counts each message it
 // sends after a settings update as an attempt to verify the address, right
-// before it sends it. Any settings update has the hook message the identity's
-// pending addresses, and concurrent updates all read an address as pending
-// before the first of them marks it sent. Every subtest has its own registry,
-// identity and recorder.
+// before it sends it, unless the update added the address and it was checked
+// before the update was saved. Any settings update has the hook message the
+// identity's pending addresses, and concurrent updates all read an address as
+// pending before the first of them marks it sent. Every subtest has its own
+// registry, identity and recorder.
 func TestVerifierDefense(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +132,19 @@ func TestVerifierDefense(t *testing.T) {
 		assert.Empty(t, recipients(t, f), "no message may be queued")
 		assert.Equal(t, identity.VerifiableAddressStatusPending, status(t, f), "a later update or the verification flow may still send it")
 		assert.Empty(t, w.Header().Get("Retry-After"), "the update stands, so its response says nothing about a retry")
+	})
+
+	t.Run("case=an address the update added is checked here unless it was checked before the save", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		// The identity lacked the address before the update, but nothing checked it before the save, as for an
+		// address that a pre-persist web hook adds by rewriting the traits.
+		previous := read(t, f)
+		previous.Traits, previous.VerifiableAddresses = identity.Traits(`{"emails":[]}`), nil
+		settingsUpdate(t, f, httptest.NewRecorder(), previous, read(t, f))
+
+		assert.Equal(t, []string{address}, recipients(t, f))
+		assert.Equal(t, []string{"BeforeAttempt"}, f.rec.Names())
 	})
 
 	t.Run("case=a registration is not checked here", func(t *testing.T) {

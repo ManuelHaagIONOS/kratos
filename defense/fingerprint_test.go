@@ -51,6 +51,30 @@ func TestFingerprinter(t *testing.T) {
 		}
 	})
 
+	t.Run("case=an identifier over the bound is neither normalized nor truncated", func(t *testing.T) {
+		t.Parallel()
+		// Normalizing runs before the defense decides: its cost must not be the client's choice.
+		const victim = "victim@example.com"
+		atBound := victim + strings.Repeat(" ", defense.MaxIdentifierLength-len(victim))
+		assert.Equal(t, victim, defense.Canonicalize(atBound))
+
+		// Truncated, a run of dropped runes could hide any identifier behind it, or make it one.
+		over := []string{
+			atBound + " ",
+			strings.Repeat("\u200b", defense.MaxIdentifierLength) + victim,
+			victim + strings.Repeat("\u200b", defense.MaxIdentifierLength),
+			strings.Repeat("a", 1<<20),
+		}
+		oversized := defense.Canonicalize(over[0])
+		assert.NotEqual(t, victim, oversized)
+		for _, id := range over {
+			assert.Equal(t, oversized, defense.Canonicalize(id), "one canonical form for all")
+			assert.Equal(t, f.Identifier(over[0]), f.Identifier(id), "one digest for all")
+		}
+		assert.NotEqual(t, f.Identifier(victim), f.Identifier(over[0]))
+		assert.NotEqual(t, oversized, defense.Canonicalize(oversized), "no identifier within the bound has it")
+	})
+
 	t.Run("case=credential is not canonicalized", func(t *testing.T) {
 		t.Parallel()
 		assert.NotEqual(t, f.Credential("Password"), f.Credential("password"))

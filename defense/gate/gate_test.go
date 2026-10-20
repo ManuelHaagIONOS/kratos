@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -114,6 +115,31 @@ func TestCheck(t *testing.T) {
 			d.defense.Reset()
 			require.NoError(t, gate.New(d, httptest.NewRecorder(), r, method).Check(t.Context(), "alice@example.com", "x"))
 			assert.Equal(t, want, d.defense.Calls()[0].Attempt.Device, method.String())
+		}
+	})
+
+	t.Run("case=the digest and the device verdict see one canonical identifier", func(t *testing.T) {
+		t.Parallel()
+		d := newDeps(t)
+		w := httptest.NewRecorder()
+		require.NoError(t, d.codec.Issue(w, newRequest(), "alice@example.com"))
+		fp := defense.NewFingerprinter([]byte("fingerprint-key-for-tests"))
+
+		for _, tc := range []struct {
+			identifier string
+			device     defense.DeviceState
+		}{
+			{"  ALICE@example.com\t", defense.DeviceKnown},
+			// Over the bound, whatever it hides: the digest of all oversized identifiers, and no known device.
+			{"alice@example.com" + strings.Repeat("\u200b", defense.MaxIdentifierLength), defense.DeviceNone},
+		} {
+			r := newRequest()
+			r.AddCookie(w.Result().Cookies()[0])
+			d.defense.Reset()
+			require.NoError(t, gate.New(d, httptest.NewRecorder(), r, defense.MethodPassword).Check(t.Context(), tc.identifier, "x"))
+			a := d.defense.Calls()[0].Attempt
+			assert.Equal(t, tc.device, a.Device)
+			assert.Equal(t, fp.Identifier(tc.identifier), a.IdentifierDigest)
 		}
 	})
 

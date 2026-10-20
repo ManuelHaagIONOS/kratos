@@ -84,13 +84,15 @@ func (g *Gate) Check(ctx context.Context, identifier, secret string) error {
 	}
 	fp := g.fingerprinter(ctx)
 	a := g.attemptOf(fp, secret)
+	// Canonicalized once, for the digest and the device verdict: it is the costliest step.
+	id := defense.Canonicalize(identifier)
 	if identifier != "" {
-		a.IdentifierDigest = fp.Identifier(identifier)
+		a.IdentifierDigest = fp.CanonicalIdentifier(id)
 	}
 	// Only the first factor may lean on a known device: it must not ease the guessing of a second factor.
 	if g.method == defense.MethodPassword {
 		// A pure HMAC check of the cookie, no database access, so it is ready in time for BeforeAttempt.
-		a.Device = g.d.KnownDeviceCookie(ctx).Verify(g.r, identifier)
+		a.Device = g.d.KnownDeviceCookie(ctx).Verify(g.r, id)
 	}
 	return g.enter(ctx, a)
 }

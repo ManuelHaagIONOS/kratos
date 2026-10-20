@@ -19,7 +19,6 @@ import (
 
 	"github.com/ory/x/configx"
 	"github.com/ory/x/httpx"
-	"github.com/ory/x/logrusx"
 
 	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/defense/defensetest"
@@ -116,6 +115,30 @@ func TestClientInfoMiddleware(t *testing.T) {
 	}
 }
 
+// serveRegistry returns a registry for servePublic with the defense d (nil: the
+// no-op one) and the values, with secrets.default unset unless they set it;
+// madeUp reads it first. The registry is initialized, so that a servePublic
+// without the check runs through and the test fails by its assertion, not by a
+// nil persister.
+func serveRegistry(t *testing.T, d defense.Defense, values map[string]any, madeUp bool) *driver.RegistryDefault {
+	t.Helper()
+	_, reg := pkg.NewFastRegistryWithMocks(t, configx.WithValue(config.ViperKeySecretsDefault, []string{}), configx.WithValues(values))
+	if d != nil {
+		reg.WithDefense(d)
+	}
+	if madeUp {
+		reg.Config().SecretsDefault(t.Context())
+	}
+	return reg
+}
+
+// serveCmd is a command with the flag of serve that servePublic reads.
+func serveCmd() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("sqa-opt-out", true, "")
+	return cmd
+}
+
 // A defense keyed with a secret made up for this process would give every
 // replica, and every restart, counters of their own: serve refuses to start.
 func TestServePublicNeedsAConfiguredFingerprintSecret(t *testing.T) {
@@ -138,22 +161,15 @@ func TestServePublicNeedsAConfiguredFingerprintSecret(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			reg, err := driver.NewRegistryFromDSN(t.Context(), pkg.NewConfigurationWithDefaults(t, configx.WithValues(tc.values)), logrusx.New("", ""))
-			require.NoError(t, err)
-			if tc.defense != nil {
-				reg.WithDefense(tc.defense)
-			}
-			if tc.madeUp {
-				reg.Config().SecretsDefault(t.Context())
-			}
+			reg := serveRegistry(t, tc.defense, tc.values, tc.madeUp)
 
-			err = checkDefenseFingerprintSecret(t.Context(), reg)
+			err := checkDefenseFingerprintSecret(t.Context(), reg)
 			if tc.ok {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				return
 			}
-			assert.ErrorContains(t, err, "defense.fingerprint_key")
-			_, err = servePublic(t.Context(), reg, &cobra.Command{})
+			require.ErrorContains(t, err, "defense.fingerprint_key")
+			_, err = servePublic(t.Context(), reg, serveCmd())
 			assert.ErrorContains(t, err, "defense.fingerprint_key", "servePublic runs the check")
 		})
 	}

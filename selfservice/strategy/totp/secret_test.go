@@ -71,13 +71,19 @@ func setStoredURL(t *testing.T, reg *driver.RegistryDefault, id uuid.UUID, value
 
 // loginAAL2 submits the code in an AAL2 API login flow and returns whether it was accepted.
 func loginAAL2(t *testing.T, reg *driver.RegistryDefault, publicTS *httptest.Server, id *identity.Identity, code string) bool {
+	status, body := loginAAL2Response(t, reg, publicTS, id, code)
+	return status == http.StatusOK && gjson.Get(body, "session.active").Bool()
+}
+
+// loginAAL2Response submits the code in an AAL2 API login flow and returns the status and body of the answer.
+func loginAAL2Response(t *testing.T, reg *driver.RegistryDefault, publicTS *httptest.Server, id *identity.Identity, code string) (int, string) {
 	apiClient := testhelpers.NewHTTPClientWithIdentitySessionToken(t.Context(), t, reg, id)
 	f := testhelpers.InitializeLoginFlowViaAPICtx(t.Context(), t, apiClient, publicTS, false, testhelpers.InitFlowWithAAL(identity.AuthenticatorAssuranceLevel2))
 	values := testhelpers.SDKFormFieldsToURLValues(f.Ui.Nodes)
 	values.Set("method", "totp")
 	values.Set("totp_code", code)
 	body, res := testhelpers.LoginMakeRequestCtx(t.Context(), t, true, false, f, apiClient, testhelpers.EncodeFormAsJSON(t, true, values))
-	return res.StatusCode == http.StatusOK && gjson.Get(body, "session.active").Bool()
+	return res.StatusCode, body
 }
 
 func TestSecretsAtRestLogin(t *testing.T) {
@@ -152,7 +158,10 @@ func TestSecretsAtRestLogin(t *testing.T) {
 
 		code, err := stdtotp.GenerateCode(key.Secret(), time.Now())
 		require.NoError(t, err)
-		assert.False(t, loginAAL2(t, reg, publicTS, id, code))
+		// The right code, but the secret cannot be opened: a fault of the server (a key dropped from
+		// secrets.totp), not of the client. A 4xx would count as a wrong code with an attack defense.
+		status, body := loginAAL2Response(t, reg, publicTS, id, code)
+		assert.Equal(t, http.StatusInternalServerError, status, body)
 		assert.Equal(t, retired, storedURL(t, reg, id.ID))
 	})
 
@@ -180,7 +189,9 @@ func TestSecretsAtRestPlaintextRefused(t *testing.T) {
 
 	code, err := stdtotp.GenerateCode(key.Secret(), time.Now())
 	require.NoError(t, err)
-	assert.False(t, loginAAL2(t, reg, publicTS, id, code))
+	// Refused by configuration: a fault of the server, not a wrong code (see "an unknown key id fails").
+	status, body := loginAAL2Response(t, reg, publicTS, id, code)
+	assert.Equal(t, http.StatusInternalServerError, status, body)
 	assert.Equal(t, key.URL(), storedURL(t, reg, id.ID), "not touched")
 }
 

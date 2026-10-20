@@ -142,7 +142,10 @@ func (s *Strategy) Login(_ http.ResponseWriter, r *http.Request, f *login.Flow, 
 
 	keyURL, upgraded, err := OpenURL(ctx, s.d, i.ID, o.TOTPURL)
 	if err != nil {
-		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(err, i.ID))
+		// The stored secret cannot be opened (its key was dropped from secrets.totp, or plaintext is no longer
+		// accepted): a fault of the server, not of the code the client sent. A 4xx would count as a wrong code.
+		return nil, s.handleLoginError(r, f, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError().
+			WithReason("The TOTP secret could not be opened.").WithDebug(err.Error()).WithWrap(err)), i.ID))
 	}
 
 	key, err := otp.NewKeyFromURL(keyURL)

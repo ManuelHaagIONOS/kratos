@@ -131,6 +131,9 @@ type recoveryLinkForIdentity struct {
 // This endpoint creates a recovery link which should be given to the user in order for them to recover
 // (or activate) their account.
 //
+// Creating a link invalidates the recovery links and codes that were created for the identity through the admin API
+// before and have not been used. Links and codes from the self-service recovery flow are not affected.
+//
 //	Consumes:
 //	- application/json
 //

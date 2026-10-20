@@ -121,6 +121,9 @@ type recoveryCodeForIdentity struct {
 // This endpoint creates a recovery code which should be given to the user in order for them to recover
 // (or activate) their account.
 //
+// Creating a code invalidates the recovery codes and links that were created for the identity through the admin API
+// before and have not been used. Codes and links from the self-service recovery flow are not affected.
+//
 //	Consumes:
 //	- application/json
 //

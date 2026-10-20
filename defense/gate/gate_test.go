@@ -156,6 +156,7 @@ func TestCheck(t *testing.T) {
 		require.ErrorAs(t, err, &sc)
 		assert.Equal(t, http.StatusTooManyRequests, sc.StatusCode())
 		assert.Equal(t, "2", w.Header().Get("Retry-After"), "rounded up to whole seconds")
+		assert.True(t, gate.Denied(err))
 
 		g.Done(t.Context(), false, err)
 		assert.Equal(t, []string{"BeforeAttempt"}, d.defense.Names(), "a denied attempt says nothing about the credential")
@@ -168,6 +169,21 @@ func TestCheck(t *testing.T) {
 		w := httptest.NewRecorder()
 		require.Error(t, gate.New(d, w, newRequest(), defense.MethodPassword).Check(t.Context(), "a", "b"))
 		assert.Empty(t, w.Header().Get("Retry-After"))
+	})
+
+	t.Run("case=a gate without a response writer denies without a header", func(t *testing.T) {
+		t.Parallel()
+		d := newDeps(t)
+		d.defense.Answer(defense.Decision{Verdict: defense.Deny, RetryAfter: time.Second}, nil)
+		err := gate.New(d, nil, newRequest(), defense.MethodVerification).Check(t.Context(), "alice@example.com", "")
+		assert.True(t, gate.Denied(err), "the caller answers the deny itself")
+	})
+
+	t.Run("case=other errors are no deny", func(t *testing.T) {
+		t.Parallel()
+		assert.False(t, gate.Denied(nil))
+		assert.False(t, gate.Denied(errors.New("valkey is down")))
+		assert.False(t, gate.Denied(herodot.ErrBadRequest().WithReason("no")))
 	})
 
 	t.Run("case=a defense error fails open", func(t *testing.T) {
@@ -216,6 +232,7 @@ func TestCheck(t *testing.T) {
 			start := time.Now()
 			err := gate.New(d, httptest.NewRecorder(), newRequest(), defense.MethodPassword).Check(ctx, "alice", "secret")
 			assert.ErrorIs(t, err, context.Canceled)
+			assert.False(t, gate.Denied(err), "a wait cut short is no deny")
 			assert.Equal(t, time.Second, time.Since(start))
 		})
 	})

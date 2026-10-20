@@ -46,7 +46,10 @@ type Gate struct {
 	reported bool
 }
 
-// New returns the Gate for a request that attempts method.
+// New returns the Gate for a request that attempts method. w receives the
+// Retry-After header of a deny. It may be nil where a deny refuses no request,
+// such as a check before a message that the caller leaves unsent while the
+// request succeeds (see Denied).
 func New(d Dependencies, w http.ResponseWriter, r *http.Request, method defense.MethodID) *Gate {
 	return &Gate{d: d, w: w, r: r, method: method}
 }
@@ -139,7 +142,7 @@ func (g *Gate) enter(ctx context.Context, a defense.Attempt) error {
 	}
 	if dec.Verdict == defense.Deny {
 		g.d.Logger().WithField("reason", dec.Reason).Info("Attempt denied by defense.")
-		if dec.RetryAfter > 0 {
+		if dec.RetryAfter > 0 && g.w != nil {
 			g.w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(dec.RetryAfter.Seconds())), 10))
 		}
 		return errors.WithStack(&herodot.DefaultError{
@@ -190,6 +193,16 @@ func (g *Gate) Done(ctx context.Context, succeeded bool, err error) {
 	case err != nil && ClientFault(err):
 		g.Failed(ctx)
 	}
+}
+
+// Denied reports whether err is the error with which Check refuses an attempt
+// that the defense denied. The only other error Check returns is that of a
+// context that ended while it waited for a delay. A caller that answers a deny
+// by leaving out what the attempt was for, such as a message, tells the two
+// apart with it.
+func Denied(err error) bool {
+	var e *herodot.DefaultError
+	return errors.As(err, &e) && e.CodeField == http.StatusTooManyRequests
 }
 
 // ClientFault reports whether err was caused by the client: a validation

@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	// One normalization for the identity lookup and the defense, so that they agree on what is one account.
 	"github.com/ory/kratos/x"
 )
 

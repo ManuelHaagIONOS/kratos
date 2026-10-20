@@ -8,15 +8,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gofrs/uuid"
 	stdtotp "github.com/pquerna/otp/totp"
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/ory/herodot"
 	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/driver"
 	"github.com/ory/kratos/driver/config"
@@ -151,6 +156,7 @@ func TestSecretsAtRestLogin(t *testing.T) {
 	t.Run("case=an unknown key id fails", func(t *testing.T) {
 		t.Parallel()
 		_, reg, publicTS := newSecretsRegistry(t, totpKeys("two", "one"), true)
+		hook := logtest.NewLocal(reg.Logger().Logger)
 		id, _, key := createIdentity(t.Context(), t, reg)
 		retired, err := cipher.NewKeyedAES(oneKey{id: "retired"}).EncryptWithAAD(t.Context(), []byte(key.URL()), []byte(id.ID.String()))
 		require.NoError(t, err)
@@ -159,10 +165,20 @@ func TestSecretsAtRestLogin(t *testing.T) {
 		code, err := stdtotp.GenerateCode(key.Secret(), time.Now())
 		require.NoError(t, err)
 		// The right code, but the secret cannot be opened: a fault of the server (a key dropped from
-		// secrets.totp), not of the client. A 4xx would count as a wrong code with an attack defense.
+		// secrets.totp), which the user cannot fix.
 		status, body := loginAAL2Response(t, reg, publicTS, id, code)
 		assert.Equal(t, http.StatusInternalServerError, status, body)
+		assert.Equal(t, "invalid_configuration", gjson.Get(body, "error.id").String(), body)
+		assert.Equal(t, "The TOTP secret could not be opened.", gjson.Get(body, "error.reason").String(), body)
+		assert.NotContains(t, body, "retired", "the key id is for the log only")
 		assert.Equal(t, retired, storedURL(t, reg, id.ID))
+
+		// The operator learns which key is missing.
+		assert.True(t, slices.ContainsFunc(hook.AllEntries(), func(e *logrus.Entry) bool {
+			fields, _ := e.Data["error"].(map[string]any)
+			debug, _ := fields["debug"].(string)
+			return strings.Contains(debug, `unknown key id "retired"`)
+		}), "no log line names the key id")
 	})
 
 	t.Run("case=the identity still counts as having TOTP once encrypted", func(t *testing.T) {
@@ -189,9 +205,11 @@ func TestSecretsAtRestPlaintextRefused(t *testing.T) {
 
 	code, err := stdtotp.GenerateCode(key.Secret(), time.Now())
 	require.NoError(t, err)
-	// Refused by configuration: a fault of the server, not a wrong code (see "an unknown key id fails").
+	// Refused by configuration: a fault of the server, not of the code (see "an unknown key id fails").
 	status, body := loginAAL2Response(t, reg, publicTS, id, code)
 	assert.Equal(t, http.StatusInternalServerError, status, body)
+	assert.Equal(t, "invalid_configuration", gjson.Get(body, "error.id").String(), body)
+	assert.Equal(t, "The TOTP secret could not be opened.", gjson.Get(body, "error.reason").String(), body)
 	assert.Equal(t, key.URL(), storedURL(t, reg, id.ID), "not touched")
 }
 
@@ -304,6 +322,42 @@ func TestSealOpenURL(t *testing.T) {
 		t.Parallel()
 		_, _, err := totp.OpenURL(ctx, newReg(t, totpKeys("one"), true), owner, "totp://")
 		require.Error(t, err)
+	})
+
+	// A secret that cannot be opened is a fault of the server, which the user cannot fix. The reason is the same
+	// for every cause; the cause, which may name a key id, is in debug, which the log shows and responses do not.
+	assertServerFault := func(t *testing.T, err error, id, cause string) {
+		t.Helper()
+		var e *herodot.DefaultError
+		require.ErrorAs(t, err, &e)
+		assert.Equal(t, http.StatusInternalServerError, e.StatusCode())
+		assert.Equal(t, id, e.ID())
+		assert.Equal(t, "The TOTP secret could not be opened.", e.Reason())
+		assert.Contains(t, e.Debug(), cause)
+	}
+
+	t.Run("case=an unknown key id is a misconfiguration", func(t *testing.T) {
+		t.Parallel()
+		retired, err := cipher.NewKeyedAES(oneKey{id: "retired"}).EncryptWithAAD(ctx, []byte(plain), []byte(owner.String()))
+		require.NoError(t, err)
+		_, _, err = totp.OpenURL(ctx, newReg(t, totpKeys("one"), true), owner, retired)
+		assertServerFault(t, err, "invalid_configuration", `unknown key id "retired"`)
+		assert.ErrorIs(t, err, cipher.ErrUnknownKeyID)
+	})
+
+	t.Run("case=refused plaintext is a misconfiguration", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := totp.OpenURL(ctx, newReg(t, totpKeys("one"), false), owner, plain)
+		assertServerFault(t, err, "invalid_configuration", "plaintext")
+	})
+
+	t.Run("case=a secret of another identity does not decrypt", func(t *testing.T) {
+		t.Parallel()
+		reg := newReg(t, totpKeys("one"), true)
+		sealed, err := totp.SealURL(ctx, reg, uuid.Must(uuid.NewV4()), plain)
+		require.NoError(t, err)
+		_, _, err = totp.OpenURL(ctx, reg, owner, sealed)
+		assertServerFault(t, err, "", "Unable to decipher the encrypted message.")
 	})
 }
 

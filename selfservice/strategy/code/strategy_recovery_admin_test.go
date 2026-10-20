@@ -257,6 +257,28 @@ func TestAdminStrategy(t *testing.T) {
 		invalidOrUsed = "The recovery code is invalid or has already been used. Please try again."
 	)
 
+	setState := func(t *testing.T, i *identity.Identity, state identity.State, method string) {
+		t.Helper()
+		var err error
+		switch method {
+		case "update":
+			var traits map[string]any
+			require.NoError(t, json.Unmarshal(i.Traits, &traits))
+			_, _, err = adminSDK.IdentityAPI.UpdateIdentity(t.Context(), i.ID.String()).UpdateIdentityBody(kratos.UpdateIdentityBody{
+				SchemaId: i.SchemaID,
+				State:    string(state),
+				Traits:   traits,
+			}).Execute()
+		case "patch":
+			_, _, err = adminSDK.IdentityAPI.PatchIdentity(t.Context(), i.ID.String()).JsonPatch([]kratos.JsonPatch{
+				{Op: "replace", Path: "/state", Value: string(state)},
+			}).Execute()
+		default:
+			t.Fatalf("unknown method %q", method)
+		}
+		require.NoError(t, err)
+	}
+
 	// Sequential like the cases above: they share one SQLite database, where concurrent requests can deadlock on
 	// pop's statement mutex against the write lock until the busy timeout.
 	t.Run("case=a new code voids the codes created before", func(t *testing.T) {
@@ -269,5 +291,33 @@ func TestAdminStrategy(t *testing.T) {
 
 		testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, older.RecoveryLink, older.RecoveryCode), invalidOrUsed)
 		testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, newer.RecoveryLink, newer.RecoveryCode), recovered)
+	})
+
+	t.Run("case=deactivating the identity voids its codes", func(t *testing.T) {
+		for _, method := range []string{"update", "patch"} {
+			t.Run("method="+method, func(t *testing.T) {
+				i := createIdentityToRecover(t, reg, testhelpers.RandomEmail())
+
+				c, _, err := createCode(createCodeParams{IdentityId: i.ID.String()})
+				require.NoError(t, err)
+				setState(t, i, identity.StateInactive, method)
+				setState(t, i, identity.StateActive, method)
+
+				testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, c.RecoveryLink, c.RecoveryCode), invalidOrUsed)
+			})
+		}
+	})
+
+	t.Run("case=a code created while the identity is inactive survives its reactivation", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, testhelpers.RandomEmail())
+
+		setState(t, i, identity.StateInactive, "update")
+		c, _, err := createCode(createCodeParams{IdentityId: i.ID.String()})
+		require.NoError(t, err)
+		// Neither an update that leaves the identity inactive nor the reactivation voids it.
+		setState(t, i, identity.StateInactive, "update")
+		setState(t, i, identity.StateActive, "update")
+
+		testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, c.RecoveryLink, c.RecoveryCode), recovered)
 	})
 }

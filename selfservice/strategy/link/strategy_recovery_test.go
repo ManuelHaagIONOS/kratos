@@ -304,6 +304,26 @@ func TestAdminStrategy(t *testing.T) {
 
 		assertLinkRecovers(t, newer)
 	})
+
+	t.Run("case=deactivating the identity voids its links", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+		var traits map[string]any
+		require.NoError(t, json.Unmarshal(i.Traits, &traits))
+		setState := func(state identity.State) {
+			_, _, err := adminSDK.IdentityAPI.UpdateIdentity(t.Context(), i.ID.String()).UpdateIdentityBody(kratos.UpdateIdentityBody{
+				SchemaId: i.SchemaID,
+				State:    string(state),
+				Traits:   traits,
+			}).Execute()
+			require.NoError(t, err)
+		}
+
+		l := createLink(t, i)
+		setState(identity.StateInactive)
+		setState(identity.StateActive)
+
+		assertLinkVoided(t, l)
+	})
 }
 
 func TestRecovery(t *testing.T) {

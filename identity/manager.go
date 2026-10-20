@@ -30,6 +30,7 @@ import (
 	"github.com/ory/kratos/schema"
 	"github.com/ory/kratos/x"
 	"github.com/ory/kratos/x/transaction"
+	"github.com/ory/pop/v6"
 	"github.com/ory/x/logrusx"
 	"github.com/ory/x/otelx"
 	"github.com/ory/x/popx"
@@ -53,6 +54,7 @@ type (
 		logrusx.Provider
 		transaction.PersistenceProvider
 		PendingTraitsChangePersistenceProvider
+		AdminRecoveryPersistenceProvider
 		template.Dependencies
 	}
 	ManagementProvider interface {
@@ -562,6 +564,18 @@ func (m *Manager) Update(ctx context.Context, updated *Identity, opts ...Manager
 	if len(o.ExcludedCredentialTypes) > 0 {
 		mods = append(mods, WithoutCredentialTypes(o.ExcludedCredentialTypes...))
 	}
+
+	// An inactive identity cannot redeem a recovery code or link, but a reactivation would revive the unused ones. So
+	// deactivating voids those an administrator created; one created while the identity is inactive is kept.
+	if original.State != StateInactive && updated.State == StateInactive {
+		return m.r.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, _ *pop.Connection) error {
+			if err := m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...); err != nil {
+				return err
+			}
+			return m.r.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, updated.ID)
+		})
+	}
+
 	return m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...)
 }
 

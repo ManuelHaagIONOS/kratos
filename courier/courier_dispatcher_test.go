@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gofrs/uuid"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -173,4 +174,33 @@ func TestDispatchMessageEmitsEventWithNID(t *testing.T) {
 	})
 	require.GreaterOrEqual(t, k, 0, "NID attribute not found on event")
 	assert.NotEmpty(t, attrs[k].Value.AsString())
+}
+
+// Kratos' code templates put the code into the subject ("Use code 123456 to log
+// in"): the courier must not log it.
+func TestDispatchLogsNoSubject(t *testing.T) {
+	_, reg := pkg.NewRegistryDefaultWithDSN(t, "", configx.WithValues(map[string]any{
+		config.ViperKeyCourierMessageRetries: 5,
+		config.ViperKeyCourierSMTPURL:        "http://foo.url",
+	}))
+	hook := logtest.NewLocal(reg.Logger().Logger)
+
+	c, err := reg.Courier(t.Context())
+	require.NoError(t, err)
+	_, err = c.QueueEmail(t.Context(), templates.NewTestStub(&templates.TestStubModel{
+		To:      "test-recipient-1@example.org",
+		Subject: "Use code 987654 to log in",
+		Body:    "test-body-1",
+	}))
+	require.NoError(t, err)
+	message, err := reg.CourierPersister().LatestQueuedMessage(t.Context())
+	require.NoError(t, err)
+	require.Error(t, c.DispatchMessage(t.Context(), *message), "there is no SMTP server at foo.url")
+
+	require.NotEmpty(t, hook.AllEntries(), "the failure is logged")
+	for _, e := range hook.AllEntries() {
+		line, err := e.String()
+		require.NoError(t, err)
+		assert.NotContains(t, line, "987654")
+	}
 }

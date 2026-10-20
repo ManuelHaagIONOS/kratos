@@ -111,8 +111,7 @@ func (c *httpChannel) Dispatch(ctx context.Context, msg Message) (err error) {
 		WithField("message_id", msg.ID).
 		WithField("message_nid", msg.NID).
 		WithField("message_type", msg.Type).
-		WithField("message_template_type", msg.TemplateType).
-		WithField("message_subject", msg.Subject)
+		WithField("message_template_type", msg.TemplateType)
 
 	if res.StatusCode >= 200 && res.StatusCode < 300 {
 		logger.Debug("Courier sent out mailer.")

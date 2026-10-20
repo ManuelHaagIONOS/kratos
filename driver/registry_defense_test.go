@@ -69,10 +69,11 @@ func checkCoverage(t *testing.T, flow string, ids []string, defended map[string]
 // strategy fails here until someone decides how it meets the defense gate.
 func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 	t.Parallel()
-	_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 
+	// Each subtest has a registry of its own: a registry builds its strategies on first use, unsynchronized.
 	t.Run("flow=recovery", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllRecoveryStrategies() {
@@ -85,6 +86,7 @@ func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 
 	t.Run("flow=verification", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllVerificationStrategies() {
@@ -97,6 +99,7 @@ func TestFlowStrategiesAreDefendedOrExempt(t *testing.T) {
 
 	t.Run("flow=registration", func(t *testing.T) {
 		t.Parallel()
+		_, reg := pkg.NewVeryFastRegistryWithoutDB(t)
 		var ids []string
 		defended := map[string]bool{}
 		for _, s := range reg.AllRegistrationStrategies() {

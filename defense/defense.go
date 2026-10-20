@@ -42,6 +42,8 @@ const (
 	// MethodRecovery, MethodVerification and MethodRegistration are not
 	// credential checks but the routes of those flows that send a message to
 	// an address named by the client. The identifier digest is that address.
+	// Each verification message of a settings update counts as
+	// MethodVerification too, checked right before it is sent.
 	MethodRecovery
 	MethodVerification
 	MethodRegistration

@@ -280,7 +280,14 @@ func TestAdminStrategy(t *testing.T) {
 		l := reg.Logger().Logger
 		level := l.GetLevel()
 		l.SetLevel(logrus.InfoLevel)
-		t.Cleanup(func() { l.SetLevel(level) })
+		// The hook goes into a copy of the logger's hooks, and the case's end puts the
+		// old ones back, so that it stops recording when the case ends.
+		hooks := make(logrus.LevelHooks)
+		for lvl, hs := range l.Hooks {
+			hooks[lvl] = append([]logrus.Hook(nil), hs...)
+		}
+		old := l.ReplaceHooks(hooks)
+		t.Cleanup(func() { l.ReplaceHooks(old); l.SetLevel(level) })
 		return logtest.NewLocal(l)
 	}
 	// voidedInLog returns the voided counts of the last log line with the message for the identity.

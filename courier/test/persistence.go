@@ -177,6 +177,7 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 					require.NoError(t, p.SetMessageStatus(ctx, id, status))
 					after := read(t, id)
 					assert.Equal(t, status, after.Status)
+					assert.Equal(t, "Use code 123456 to log in", after.Subject, "a retry needs it")
 					assert.Equal(t, "your code is 123456", after.Body)
 					assert.NotEmpty(t, after.TemplateData)
 				})
@@ -185,7 +186,9 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			t.Run("other messages are untouched", func(t *testing.T) {
 				id, other := add(t), add(t)
 				require.NoError(t, p.SetMessageStatus(ctx, id, courier.MessageStatusSent))
-				assert.Equal(t, "your code is 123456", read(t, other).Body)
+				after := read(t, other)
+				assert.Equal(t, "Use code 123456 to log in", after.Subject)
+				assert.Equal(t, "your code is 123456", after.Body)
 			})
 
 			t.Run("an unknown message is an error", func(t *testing.T) {

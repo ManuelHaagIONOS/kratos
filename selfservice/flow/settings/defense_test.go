@@ -22,8 +22,10 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/pkg"
+	kratos "github.com/ory/kratos/pkg/httpclient"
 	"github.com/ory/kratos/pkg/testhelpers"
 	"github.com/ory/kratos/selfservice/flow/settings"
+	"github.com/ory/kratos/selfservice/flow/verification"
 	"github.com/ory/x/configx"
 )
 
@@ -51,8 +53,10 @@ func (d denyAfter) BeforeAttempt(ctx context.Context, a defense.Attempt) (defens
 // update, which changes and sends nothing. After any update, whatever its
 // strategy, the verification hook messages the identity's pending addresses,
 // and checks each of the others right before it is sent: a denied one is
-// withheld, and the update stands. Every subtest has its own registry, server,
-// identity and recorder.
+// withheld, and the update stands. The verification flow of a change that
+// verify_new_address keeps pending resends its code to the pending address,
+// whatever address the client names, and counts the resend for the pending
+// address. Every subtest has its own registry, server, identity and recorder.
 func TestSettingsDefense(t *testing.T) {
 	t.Parallel()
 
@@ -268,6 +272,39 @@ func TestSettingsDefense(t *testing.T) {
 			assert.Equal(t, digest(t, f, added), c.Attempt.IdentifierDigest)
 		}
 		assert.Equal(t, []string{added, added}, recipients(t, f), "the hook saves nothing until the address is verified, so it sends on every update")
+	})
+
+	// Counted for the address the client names, resends that name a different one each time would message the
+	// pending address without end. The verification flow needs no session.
+	t.Run("case=a resend of a pending change's code is counted for the pending address", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, false, nil, verifyNewAddress)
+		res, body := submit(t, f, addresses(added, ""))
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+		flowID := gjson.Get(body, `continue_with.#(action=="show_verification_ui").flow.id`).String()
+		require.NotEmpty(t, flowID, "%s", body)
+		vf := &kratos.VerificationFlow{Ui: kratos.UiContainer{Action: f.public.URL + verification.RouteSubmitFlow + "?flow=" + flowID}}
+		resend := func(t *testing.T, named string) (*http.Response, string) {
+			t.Helper()
+			body, res := testhelpers.VerificationMakeRequest(t, true, vf, testhelpers.NewDebugClient(t),
+				testhelpers.EncodeFormAsJSON(t, true, url.Values{"method": {"code"}, "email": {named}}))
+			return res, body
+		}
+
+		res, body = resend(t, "decoy@example.com")
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+		assert.Equal(t, []string{added, added}, recipients(t, f), "the code goes to the pending address")
+
+		f.rec.Answer(defense.Decision{Verdict: defense.Deny}, nil)
+		res, body = resend(t, "another-decoy@example.com")
+		assert.Equal(t, http.StatusTooManyRequests, res.StatusCode, "%s", body)
+		assert.Equal(t, []string{added, added}, recipients(t, f), "a denied resend sends nothing")
+
+		require.Equal(t, []string{"BeforeAttempt", "BeforeAttempt", "BeforeAttempt"}, f.rec.Names(), "the update and both resends")
+		for _, c := range f.rec.Calls() {
+			assert.Equal(t, defense.MethodVerification, c.Attempt.Method)
+			assert.Equal(t, digest(t, f, added), c.Attempt.IdentifierDigest, "each counted for the address that receives the code")
+		}
 	})
 
 	// Concurrent updates all read the address as pending, and each messages it: checked right before the message,

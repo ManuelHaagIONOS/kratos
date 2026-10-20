@@ -957,6 +957,9 @@ func (m *RegistryDefault) RegistrationCodePersister() code.RegistrationCodePersi
 func (m *RegistryDefault) PendingTraitsChangePersister() identity.PendingTraitsChangePersister {
 	return m.Persister()
 }
+func (m *RegistryDefault) AdminRecoveryPersister() identity.AdminRecoveryPersister {
+	return m.persister
+}
 
 func (m *RegistryDefault) TransactionalPersisterProvider() transaction.Persister {
 	return m.persister

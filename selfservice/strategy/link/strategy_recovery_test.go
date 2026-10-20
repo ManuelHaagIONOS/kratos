@@ -247,6 +247,63 @@ func TestAdminStrategy(t *testing.T) {
 		require.NotEmpty(t, action)
 		assert.Equal(t, "The recovery token is invalid or has already been used. Please retry the flow.", gjson.GetBytes(body, "ui.messages.0.text").String())
 	})
+
+	createLink := func(t *testing.T, i *identity.Identity) string {
+		t.Helper()
+		rl, _, err := adminSDK.IdentityAPI.CreateRecoveryLinkForIdentity(t.Context()).
+			CreateRecoveryLinkForIdentityBody(kratos.CreateRecoveryLinkForIdentityBody{IdentityId: i.ID.String()}).
+			Execute()
+		require.NoError(t, err)
+		return rl.RecoveryLink
+	}
+	assertLinkRecovers := func(t *testing.T, recoveryLink string) {
+		t.Helper()
+		res, err := publicTS.Client().Get(recoveryLink)
+		require.NoError(t, err)
+		assert.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowSettingsUI(t.Context()).String())
+	}
+	assertLinkVoided := func(t *testing.T, recoveryLink string) {
+		t.Helper()
+		res, err := publicTS.Client().Get(recoveryLink)
+		require.NoError(t, err)
+		body := ioutilx.MustReadAll(res.Body)
+		assert.Equal(t, "The recovery token is invalid or has already been used. Please retry the flow.", gjson.GetBytes(body, "ui.messages.0.text").String(), "%s", body)
+	}
+
+	// Sequential like the cases above: they share one SQLite database, where concurrent requests can deadlock on
+	// pop's statement mutex against the write lock until the busy timeout.
+	t.Run("case=a new link voids the links created before", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+
+		older := createLink(t, i)
+		newer := createLink(t, i)
+
+		assertLinkVoided(t, older)
+		assertLinkRecovers(t, newer)
+	})
+
+	t.Run("case=a new code voids the link and a new link voids the code", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, strings.ToLower(testhelpers.RandomEmail()))
+
+		older := createLink(t, i)
+		c, _, err := adminSDK.IdentityAPI.CreateRecoveryCodeForIdentity(t.Context()).
+			CreateRecoveryCodeForIdentityBody(kratos.CreateRecoveryCodeForIdentityBody{IdentityId: i.ID.String()}).
+			Execute()
+		require.NoError(t, err)
+		assertLinkVoided(t, older)
+
+		newer := createLink(t, i)
+		res, err := publicTS.Client().Get(c.RecoveryLink)
+		require.NoError(t, err)
+		action := gjson.GetBytes(ioutilx.MustReadAll(res.Body), "ui.action").String()
+		require.NotEmpty(t, action)
+		res, err = publicTS.Client().PostForm(action, url.Values{"code": {c.RecoveryCode}})
+		require.NoError(t, err)
+		body := ioutilx.MustReadAll(res.Body)
+		assert.Equal(t, "The recovery code is invalid or has already been used. Please try again.", gjson.GetBytes(body, "ui.messages.0.text").String(), "%s", body)
+
+		assertLinkRecovers(t, newer)
+	})
 }
 
 func TestRecovery(t *testing.T) {

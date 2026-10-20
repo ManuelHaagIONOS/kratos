@@ -195,6 +195,14 @@ func (s *Strategy) createRecoveryLinkForIdentity(w http.ResponseWriter, r *http.
 			return err
 		}
 
+		// The new link voids the unused links and codes an administrator created for the identity before, so an older
+		// one cannot set the password after the newer one was used. After the flow's insert: on SQLite, a raw delete
+		// first would hold the write lock while the insert waits for pop's statement mutex, which a concurrent write
+		// holds while it waits for that lock.
+		if err := s.d.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, id.ID); err != nil {
+			return err
+		}
+
 		return s.d.RecoveryTokenPersister().CreateRecoveryToken(ctx, token)
 	}); err != nil {
 		s.d.Writer().WriteError(w, r, err)

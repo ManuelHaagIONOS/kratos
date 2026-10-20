@@ -211,6 +211,14 @@ func (s *Strategy) createRecoveryCodeForIdentity(w http.ResponseWriter, r *http.
 			return err
 		}
 
+		// The new code voids the unused codes and links an administrator created for the identity before, so an older
+		// one cannot set the password after the newer one was used. After the flow's insert: on SQLite, a raw delete
+		// first would hold the write lock while the insert waits for pop's statement mutex, which a concurrent write
+		// holds while it waits for that lock.
+		if err := s.deps.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, id.ID); err != nil {
+			return err
+		}
+
 		if _, err := s.deps.RecoveryCodePersister().CreateRecoveryCode(ctx, &CreateRecoveryCodeParams{
 			RawCode:    rawCode,
 			CodeType:   RecoveryCodeTypeAdmin,

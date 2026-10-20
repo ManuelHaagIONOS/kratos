@@ -251,4 +251,23 @@ func TestAdminStrategy(t *testing.T) {
 		require.Len(t, continueWith, 2)
 		assert.EqualValues(t, flow.ContinueWithActionSetOrySessionTokenString, continueWith[0].Get("action").String())
 	})
+
+	const (
+		recovered     = "You successfully recovered your account. Please change your password or set up an alternative login method (e.g. social sign in) within the next 60.00 minutes."
+		invalidOrUsed = "The recovery code is invalid or has already been used. Please try again."
+	)
+
+	// Sequential like the cases above: they share one SQLite database, where concurrent requests can deadlock on
+	// pop's statement mutex against the write lock until the busy timeout.
+	t.Run("case=a new code voids the codes created before", func(t *testing.T) {
+		i := createIdentityToRecover(t, reg, testhelpers.RandomEmail())
+
+		older, _, err := createCode(createCodeParams{IdentityId: i.ID.String()})
+		require.NoError(t, err)
+		newer, _, err := createCode(createCodeParams{IdentityId: i.ID.String()})
+		require.NoError(t, err)
+
+		testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, older.RecoveryLink, older.RecoveryCode), invalidOrUsed)
+		testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, newer.RecoveryLink, newer.RecoveryCode), recovered)
+	})
 }

@@ -193,6 +193,33 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 			})
 		})
 
+		t.Run("case=only a processing message is requeued", func(t *testing.T) {
+			// A sent or abandoned message has lost its content and must not go out again.
+			for status, want := range map[courier.MessageStatus]courier.MessageStatus{
+				courier.MessageStatusProcessing: courier.MessageStatusQueued,
+				courier.MessageStatusQueued:     courier.MessageStatusQueued,
+				courier.MessageStatusSent:       courier.MessageStatusSent,
+				courier.MessageStatusAbandoned:  courier.MessageStatusAbandoned,
+			} {
+				t.Run("status="+status.String(), func(t *testing.T) {
+					// Its own message, removed again, so that the other cases keep theirs.
+					var m courier.Message
+					require.NoError(t, faker.FakeData(&m))
+					require.NoError(t, p.AddMessage(ctx, &m))
+					t.Cleanup(func() {
+						require.NoError(t, p.GetConnection(ctx).RawQuery(
+							"DELETE FROM courier_messages WHERE id = ? AND nid = ?", m.ID, nid).Exec())
+					})
+					require.NoError(t, p.SetMessageStatus(ctx, m.ID, status))
+
+					require.NoError(t, p.RequeueMessage(ctx, m.ID))
+					actual, err := p.FetchMessage(ctx, m.ID)
+					require.NoError(t, err)
+					assert.Equal(t, want, actual.Status)
+				})
+			}
+		})
+
 		t.Run("case=incrementing send count", func(t *testing.T) {
 			originalSendCount := messages[0].SendCount
 			require.NoError(t, p.SetMessageStatus(ctx, messages[0].ID, courier.MessageStatusQueued))
@@ -402,6 +429,14 @@ func TestPersister(ctx context.Context, newNetworkUnlessExisting NetworkWrapper,
 				_, p := newNetwork(t, ctx)
 				err := p.SetMessageStatus(ctx, id, courier.MessageStatusProcessing)
 				require.ErrorIs(t, err, sqlcon.ErrNoRows())
+			})
+
+			t.Run("can not requeue on another network", func(t *testing.T) {
+				_, other := newNetwork(t, ctx)
+				require.NoError(t, other.RequeueMessage(ctx, id))
+				actual, err := p.FetchMessage(ctx, id)
+				require.NoError(t, err)
+				assert.Equal(t, courier.MessageStatusProcessing, actual.Status)
 			})
 		})
 

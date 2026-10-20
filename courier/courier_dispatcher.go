@@ -145,8 +145,10 @@ func (c *courier) DispatchQueue(ctx context.Context) (err error) {
 				}
 			}
 
+			// Only what is still processing goes back: a channel abandons a message
+			// it must not retry (e.g. SMTP 5xx), and that is final.
 			for _, replace := range messages[k:] {
-				if err := c.deps.CourierPersister().SetMessageStatus(ctx, replace.ID, MessageStatusQueued); err != nil {
+				if err := c.deps.CourierPersister().RequeueMessage(ctx, replace.ID); err != nil {
 					logger.
 						WithError(err).
 						Error(`Unable to reset the failed message's status to "queued".`)

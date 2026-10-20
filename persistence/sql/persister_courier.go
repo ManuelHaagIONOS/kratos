@@ -172,6 +172,16 @@ func (p *Persister) SetMessageStatus(ctx context.Context, id uuid.UUID, ms couri
 	return nil
 }
 
+func (p *Persister) RequeueMessage(ctx context.Context, id uuid.UUID) (err error) {
+	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.RequeueMessage")
+	defer otelx.End(span, &err)
+
+	return sqlcon.HandleError(p.GetConnection(ctx).RawQuery(
+		"UPDATE courier_messages SET status = ? WHERE id = ? AND nid = ? AND status = ?",
+		courier.MessageStatusQueued, id, p.NetworkID(ctx), courier.MessageStatusProcessing,
+	).Exec())
+}
+
 func (p *Persister) IncrementMessageSendCount(ctx context.Context, id uuid.UUID) (err error) {
 	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.IncrementMessageSendCount")
 	defer otelx.End(span, &err)

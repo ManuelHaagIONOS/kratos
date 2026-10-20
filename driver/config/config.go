@@ -614,11 +614,13 @@ func (p *Config) DefenseFingerprintSecret(ctx context.Context) []byte {
 // configured, as defense.fingerprint_key or secrets.default, rather than made
 // up by SecretsDefault for this process alone.
 func (p *Config) DefenseFingerprintSecretConfigured(ctx context.Context) bool {
-	pr := p.GetProvider(ctx)
-	if pr.String(ViperKeyDefenseFingerprintKey) != "" {
-		return true
-	}
-	return len(pr.Strings(ViperKeySecretsDefault)) > 0 && !p.defaultSecretMadeUp.Load()
+	return p.GetProvider(ctx).String(ViperKeyDefenseFingerprintKey) != "" || p.secretsDefaultConfigured(ctx)
+}
+
+// secretsDefaultConfigured says whether secrets.default is configured, rather
+// than made up by SecretsDefault for this process alone.
+func (p *Config) secretsDefaultConfigured(ctx context.Context) bool {
+	return len(p.GetProvider(ctx).Strings(ViperKeySecretsDefault)) > 0 && !p.defaultSecretMadeUp.Load()
 }
 
 // KnownDeviceCookieMode says whether the KnownDeviceCookie is issued after login
@@ -670,6 +672,14 @@ func (p *Config) KnownDeviceCookieSecrets(ctx context.Context) [][]byte {
 		result[k] = []byte(v)
 	}
 	return result
+}
+
+// KnownDeviceCookieSecretsConfigured says whether KnownDeviceCookieSecrets are
+// configured, as defense.known_device_cookie.secrets or secrets.default, rather
+// than made up by SecretsDefault for this process alone. defense.fingerprint_key
+// does not count: it never signs the cookie.
+func (p *Config) KnownDeviceCookieSecretsConfigured(ctx context.Context) bool {
+	return len(p.GetProvider(ctx).Strings(ViperKeyKnownDeviceCookieSecrets)) > 0 || p.secretsDefaultConfigured(ctx)
 }
 
 // KnownDeviceCookieLifespan is how long a KnownDeviceCookie is valid, counted

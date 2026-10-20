@@ -6,6 +6,7 @@ package daemon
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -171,6 +172,58 @@ func TestServePublicNeedsAConfiguredFingerprintSecret(t *testing.T) {
 			require.ErrorContains(t, err, "defense.fingerprint_key")
 			_, err = servePublic(t.Context(), reg, serveCmd())
 			assert.ErrorContains(t, err, "defense.fingerprint_key", "servePublic runs the check")
+		})
+	}
+}
+
+// A known device cookie signed with a key made up for this process would verify
+// only on the replica that issued it, until it restarts: serve refuses to start
+// a defense with it. defense.fingerprint_key, set in every case, does not sign it.
+func TestServePublicNeedsAConfiguredKnownDeviceCookieSecret(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		noop   bool // no defense; else one that uses the verdict or not
+		uses   bool
+		values map[string]any
+		madeUp bool // SecretsDefault was read before, as the cookie store does
+		ok     bool
+	}{
+		{name: "no defense needs none, even with the cookie forced on", noop: true, madeUp: true, ok: true,
+			values: map[string]any{config.ViperKeyKnownDeviceCookieEnabled: true}},
+		{name: "a defense that uses the verdict, without a cookie secret", uses: true},
+		{name: "a defense that uses the verdict, with a made-up secrets.default", uses: true, madeUp: true},
+		{name: "a defense that uses the verdict, with known_device_cookie.secrets", uses: true, madeUp: true, ok: true,
+			values: map[string]any{config.ViperKeyKnownDeviceCookieSecrets: []string{"cookie-secret"}}},
+		{name: "a defense that uses the verdict, with secrets.default", uses: true, ok: true,
+			values: map[string]any{config.ViperKeySecretsDefault: []string{"default-secret"}}},
+		{name: "a defense that does not use it leaves the cookie off", madeUp: true, ok: true},
+		{name: "the cookie forced on, for a defense that does not use it",
+			values: map[string]any{config.ViperKeyKnownDeviceCookieEnabled: true}},
+		{name: "the cookie forced off", uses: true, madeUp: true, ok: true,
+			values: map[string]any{config.ViperKeyKnownDeviceCookieEnabled: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var d defense.Defense
+			if !tc.noop {
+				rec := new(defensetest.Recorder)
+				rec.UseKnownDeviceVerdict(tc.uses)
+				d = rec
+			}
+			values := map[string]any{config.ViperKeyDefenseFingerprintKey: "fingerprint-key"}
+			maps.Copy(values, tc.values)
+			reg := serveRegistry(t, d, values, tc.madeUp)
+
+			err := checkKnownDeviceCookieSecret(t.Context(), reg)
+			if tc.ok {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "defense.known_device_cookie.secrets")
+			_, err = servePublic(t.Context(), reg, serveCmd())
+			assert.ErrorContains(t, err, "defense.known_device_cookie.secrets", "servePublic runs the check")
 		})
 	}
 }

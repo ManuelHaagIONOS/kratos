@@ -4,6 +4,8 @@
 package totp_test
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -11,12 +13,14 @@ import (
 	stdtotp "github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/ory/kratos/cipher"
 	"github.com/ory/kratos/defense"
 	"github.com/ory/kratos/defense/defensetest"
 	"github.com/ory/kratos/driver"
 	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/persistence"
 	"github.com/ory/kratos/pkg"
 	"github.com/ory/kratos/pkg/testhelpers"
 	"github.com/ory/x/configx"
@@ -110,4 +114,24 @@ func TestLoginDefense(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, res.StatusCode)
 		check(t, reg, rec, id, "BeforeAttempt")
 	})
+
+	t.Run("case=a failed lookup of the TOTP credentials reports no outcome", func(t *testing.T) {
+		t.Parallel()
+		reg, rec, id, _, body := login(t, defense.Decision{}, right, func(_ *testing.T, reg *driver.RegistryDefault, _ *identity.Identity) {
+			reg.SetPersister(failingTOTPLookup{reg.Persister()})
+		})
+		// Not "no TOTP device registered": an error, whose status the API flow takes from it, 400 if it has none.
+		assert.EqualValues(t, http.StatusInternalServerError, gjson.Get(body, "error.code").Int(), body)
+		check(t, reg, rec, id, "BeforeAttempt")
+	})
+}
+
+// failingTOTPLookup fails the lookup of TOTP credentials, as an unavailable database does.
+type failingTOTPLookup struct{ persistence.Persister }
+
+func (f failingTOTPLookup) FindByCredentialsIdentifier(ctx context.Context, ct identity.CredentialsType, match string) (*identity.Identity, *identity.Credentials, error) {
+	if ct == identity.CredentialsTypeTOTP {
+		return nil, nil, errors.New("the database is unavailable")
+	}
+	return f.Persister.FindByCredentialsIdentifier(ctx, ct, match)
 }

@@ -4,6 +4,7 @@
 package defense_test
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -11,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/ory/kratos/defense"
-	"github.com/ory/kratos/x"
+	"github.com/ory/kratos/identity"
+	sqlidentity "github.com/ory/kratos/persistence/sql/identity"
 )
 
 func TestFingerprinter(t *testing.T) {
@@ -28,10 +30,11 @@ func TestFingerprinter(t *testing.T) {
 
 	t.Run("case=every variant that finds the same identity shares its digest", func(t *testing.T) {
 		t.Parallel()
-		// Kratos looks password, code and WebAuthn identifiers up after
-		// x.GracefulNormalization. A variant it maps to the same identity but the
-		// defense to another digest would get a fresh failure budget for that
-		// identity: one per invisible rune inserted anywhere.
+		// The oracle is the lookup's own normalization, for each credential type
+		// whose identifier the client types. A variant it maps to the same identity
+		// but the defense to another digest would get a fresh failure budget for
+		// that identity: one per invisible rune inserted anywhere. (The lookup also
+		// matches the raw identifier, for identifiers stored before normalization.)
 		var variants []string
 		for _, base := range []string{"victim@example.com", "+49 170 1234567", "some.user"} {
 			variants = append(variants, base, strings.ToUpper(base), " "+base+"\t")
@@ -42,11 +45,27 @@ func TestFingerprinter(t *testing.T) {
 			}
 		}
 		variants = append(variants, "ｖｉｃｔｉｍ＠ｅｘａｍｐｌｅ．ｃｏｍ", "+491701234567", "+49-170-123 4567", "+49 (170) 1234567")
-		for _, a := range variants {
-			for _, b := range variants {
-				if x.GracefulNormalization(a) == x.GracefulNormalization(b) {
-					assert.Equal(t, f.Identifier(a), f.Identifier(b), "%q and %q find the same identity", a, b)
+		digests := make([]defense.Digest, len(variants))
+		for i, v := range variants {
+			digests[i] = f.Identifier(v)
+		}
+
+		for _, ct := range []identity.CredentialsType{identity.CredentialsTypePassword, identity.CredentialsTypeCodeAuth, identity.CredentialsTypeWebAuthn} {
+			lookup := make([]string, len(variants))
+			for i, v := range variants {
+				lookup[i] = sqlidentity.NormalizeIdentifier(ct, v)
+			}
+			var split []string
+			for i := range variants {
+				for j := i + 1; j < len(variants); j++ {
+					if lookup[i] == lookup[j] && digests[i] != digests[j] {
+						split = append(split, fmt.Sprintf("%+q and %+q", variants[i], variants[j]))
+					}
 				}
+			}
+			if len(split) > 0 {
+				t.Errorf("%s: %d pairs of variants find the same identity but have different digests, e.g. %s",
+					ct, len(split), strings.Join(split[:min(3, len(split))], "; "))
 			}
 		}
 	})

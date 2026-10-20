@@ -308,6 +308,22 @@ func TestAdminStrategy(t *testing.T) {
 		}
 	})
 
+	t.Run("case=an update that keeps the identity active keeps its code", func(t *testing.T) {
+		for _, method := range []string{"update", "patch"} {
+			t.Run("method="+method, func(t *testing.T) {
+				i := createIdentityToRecover(t, reg, testhelpers.RandomEmail())
+
+				c, _, err := createCode(createCodeParams{IdentityId: i.ID.String()})
+				require.NoError(t, err)
+				// Only a deactivation voids it. Settings, a password rehash at login and admin edits update an active
+				// identity too.
+				setState(t, i, identity.StateActive, method)
+
+				testhelpers.AssertMessage(t, submitRecoveryCode(t, nil, c.RecoveryLink, c.RecoveryCode), recovered)
+			})
+		}
+	})
+
 	t.Run("case=a code created while the identity is inactive survives its reactivation", func(t *testing.T) {
 		i := createIdentityToRecover(t, reg, testhelpers.RandomEmail())
 

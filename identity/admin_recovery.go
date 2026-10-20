@@ -21,9 +21,11 @@ type (
 	AdminRecoveryPersister interface {
 		// DeleteUnusedAdminRecoveryCodesAndLinks deletes the identity's
 		// recovery codes and links that were created through the admin API and
-		// not used yet. Codes and links of the self-service recovery flow are
-		// kept: the identity's owner requested them.
-		DeleteUnusedAdminRecoveryCodesAndLinks(ctx context.Context, identityID uuid.UUID) error
+		// not used yet, and returns how many of each it deleted: callers log
+		// them, as the deleted rows leave no other trace. Codes and links of the
+		// self-service recovery flow are kept: the identity's owner requested
+		// them.
+		DeleteUnusedAdminRecoveryCodesAndLinks(ctx context.Context, identityID uuid.UUID) (codes, links int, err error)
 	}
 
 	AdminRecoveryPersistenceProvider interface {

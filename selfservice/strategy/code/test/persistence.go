@@ -288,13 +288,20 @@ func TestPersister(ctx context.Context, p interface {
 
 				t.Run("not on another network", func(t *testing.T) {
 					_, p := testhelpers.NewNetwork(t, ctx, p)
-					require.NoError(t, p.DeleteUnusedAdminRecoveryCodesAndLinks(ctx, member.ID))
+					codes, links, err := p.DeleteUnusedAdminRecoveryCodesAndLinks(ctx, member.ID)
+					require.NoError(t, err)
+					assert.Zero(t, codes, "deleted codes")
+					assert.Zero(t, links, "deleted links")
 					for name, r := range voided {
 						assert.Truef(t, exists(t, r), "%s was deleted from another network", name)
 					}
 				})
 
-				require.NoError(t, p.DeleteUnusedAdminRecoveryCodesAndLinks(ctx, member.ID))
+				codes, links, err := p.DeleteUnusedAdminRecoveryCodesAndLinks(ctx, member.ID)
+				require.NoError(t, err)
+				// The counts are what the callers log.
+				assert.Equal(t, 1, codes, "deleted codes")
+				assert.Equal(t, 1, links, "deleted links")
 				for name, r := range voided {
 					assert.Falsef(t, exists(t, r), "%s was kept", name)
 				}

@@ -193,7 +193,8 @@ func (s *Strategy) createRecoveryLinkForIdentity(w http.ResponseWriter, r *http.
 	}
 
 	token := NewAdminRecoveryToken(id.ID, req.ID, expiresIn)
-	if err := s.d.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, c *pop.Connection) error {
+	var voidedCodes, voidedLinks int
+	if err := s.d.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, c *pop.Connection) (err error) {
 		if err := s.d.RecoveryFlowPersister().CreateRecoveryFlow(ctx, req); err != nil {
 			return err
 		}
@@ -202,7 +203,8 @@ func (s *Strategy) createRecoveryLinkForIdentity(w http.ResponseWriter, r *http.
 		// one cannot set the password after the newer one was used. After the flow's insert: on SQLite, a raw delete
 		// first would hold the write lock while the insert waits for pop's statement mutex, which a concurrent write
 		// holds while it waits for that lock.
-		if err := s.d.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, id.ID); err != nil {
+		voidedCodes, voidedLinks, err = s.d.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, id.ID)
+		if err != nil {
 			return err
 		}
 
@@ -216,8 +218,11 @@ func (s *Strategy) createRecoveryLinkForIdentity(w http.ResponseWriter, r *http.
 		events.NewRecoveryInitiatedByAdmin(ctx, req.ID, id.ID, req.Type.String(), "link"),
 	)
 
+	// The voided counts tell why an earlier link or code stopped working.
 	s.d.Logger().
 		WithField("identity_id", id.ID).
+		WithField("voided_recovery_codes", voidedCodes).
+		WithField("voided_recovery_links", voidedLinks).
 		WithSensitiveField("recovery_link_token", token).
 		Info("A recovery link has been created.")
 

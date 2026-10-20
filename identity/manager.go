@@ -568,12 +568,23 @@ func (m *Manager) Update(ctx context.Context, updated *Identity, opts ...Manager
 	// An inactive identity cannot redeem a recovery code or link, but a reactivation would revive the unused ones. So
 	// deactivating voids those an administrator created; one created while the identity is inactive is kept.
 	if original.State != StateInactive && updated.State == StateInactive {
-		return m.r.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, _ *pop.Connection) error {
+		var codes, links int
+		if err := m.r.TransactionalPersisterProvider().Transaction(ctx, func(ctx context.Context, _ *pop.Connection) (err error) {
 			if err := m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...); err != nil {
 				return err
 			}
-			return m.r.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, updated.ID)
-		})
+			codes, links, err = m.r.AdminRecoveryPersister().DeleteUnusedAdminRecoveryCodesAndLinks(ctx, updated.ID)
+			return err
+		}); err != nil {
+			return err
+		}
+		// The deleted rows leave no other trace of why a code or link stopped working.
+		m.r.Logger().
+			WithField("identity_id", updated.ID).
+			WithField("voided_recovery_codes", codes).
+			WithField("voided_recovery_links", links).
+			Info("Deactivating the identity voided its unused recovery codes and links from the admin API.")
+		return nil
 	}
 
 	return m.r.PrivilegedIdentityPool().UpdateIdentity(ctx, updated, mods...)

@@ -131,23 +131,28 @@ func (p *Persister) DeleteRecoveryToken(ctx context.Context, token string) (err 
 	return p.GetConnection(ctx).RawQuery(fmt.Sprintf("DELETE FROM %s WHERE token=? AND nid = ?", new(link.RecoveryToken).TableName(ctx)), token, p.NetworkID(ctx)).Exec()
 }
 
-func (p *Persister) DeleteUnusedAdminRecoveryCodesAndLinks(ctx context.Context, identityID uuid.UUID) (err error) {
+func (p *Persister) DeleteUnusedAdminRecoveryCodesAndLinks(ctx context.Context, identityID uuid.UUID) (codes, links int, err error) {
 	ctx, span := p.r.Tracer(ctx).Tracer().Start(ctx, "persistence.sql.DeleteUnusedAdminRecoveryCodesAndLinks")
 	defer otelx.End(span, &err)
 
 	nid := p.NetworkID(ctx)
 	// Deleted, not marked used, so that used still means used. A deleted code or
 	// link is answered like a wrong one.
-	return sqlcon.HandleError(p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) error {
+	if err := sqlcon.HandleError(p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) (err error) {
 		//#nosec G201 -- TableName is static
-		if err := tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND code_type = ? AND used_at IS NULL", new(code.RecoveryCode).TableName(ctx)),
-			identityID, nid, code.RecoveryCodeTypeAdmin).Exec(); err != nil {
+		codes, err = tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND code_type = ? AND used_at IS NULL", new(code.RecoveryCode).TableName(ctx)),
+			identityID, nid, code.RecoveryCodeTypeAdmin).ExecWithCount()
+		if err != nil {
 			return err
 		}
 		//#nosec G201 -- TableName is static
-		return tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND token_type = ? AND NOT used", new(link.RecoveryToken).TableName(ctx)),
-			identityID, nid, link.RecoveryTokenTypeAdmin).Exec()
-	}))
+		links, err = tx.RawQuery(fmt.Sprintf("DELETE FROM %s WHERE identity_id = ? AND nid = ? AND token_type = ? AND NOT used", new(link.RecoveryToken).TableName(ctx)),
+			identityID, nid, link.RecoveryTokenTypeAdmin).ExecWithCount()
+		return err
+	})); err != nil {
+		return 0, 0, err
+	}
+	return codes, links, nil
 }
 
 func (p *Persister) DeleteExpiredRecoveryFlows(ctx context.Context, expiresAt time.Time, limit int) (err error) {
